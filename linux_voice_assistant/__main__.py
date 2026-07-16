@@ -22,6 +22,7 @@ from .models import Preferences, ServerState
 from .mpv_player import MpvMediaPlayer
 from .peripheral_api import LVAEvent, PeripheralAPIServer
 from .satellite import VoiceSatelliteProtocol
+from .tater_native import TaterNativeClient
 from .util import (
     get_default_interface,
     get_default_ipv4,
@@ -178,6 +179,41 @@ async def main() -> None:
         type=int,
         default=6053,
         help="Port the application is listening on (default: 6053)",
+    )
+    parser.add_argument(
+        "--tater-url",
+        help="Tater server or native satellite WebSocket URL. Enables outbound Tater-native mode instead of the ESPHome server.",
+    )
+    parser.add_argument(
+        "--tater-token",
+        default="",
+        help="Tater pairing code, device token, or API token",
+    )
+    parser.add_argument(
+        "--tater-token-file",
+        default="",
+        help="File used to load and persist the device token returned after Tater pairing",
+    )
+    parser.add_argument(
+        "--tater-device-id",
+        default="",
+        help="Stable Tater native satellite device ID (default: generated LVA device name)",
+    )
+    parser.add_argument(
+        "--tater-board",
+        default="linux",
+        help="Board identifier reported to Tater (for example: linux or reachy_mini)",
+    )
+    parser.add_argument(
+        "--tater-room",
+        default="",
+        help="Room reported to Tater",
+    )
+    parser.add_argument(
+        "--tater-reconnect-seconds",
+        type=float,
+        default=2.0,
+        help="Delay between Tater native WebSocket reconnect attempts (default: 2)",
     )
     parser.add_argument(
         "--enable-thinking-sound",
@@ -434,61 +470,82 @@ async def main() -> None:
         state.peripheral_api = peripheral_api
 
     # ------------------------------------------------------------------
-    # ESPHome TCP server (with retry on EADDRINUSE)
+    # Satellite transport: outbound Tater native client or ESPHome TCP server.
     # ------------------------------------------------------------------
     loop = asyncio.get_running_loop()
-    max_attempts = 15
-    attempt = 1
     server = None
+    native_client: Optional[TaterNativeClient] = None
 
-    # Validate VoiceSatelliteProtocol initialization BEFORE starting server
-    # This catches errors like missing imports or broken initialization immediately
-    # instead of failing silently only when first client connects
-    _LOGGER.debug("Validating VoiceSatelliteProtocol initialization...")
-    try:
-        # Create test instance to run complete __init__ code path
-        test_protocol = VoiceSatelliteProtocol(state)
-        # Cleanup state reference
-        test_protocol.state.satellite = None
-        del test_protocol
-        _LOGGER.debug("✅ VoiceSatelliteProtocol validation successful")
-    except Exception:
-        _LOGGER.critical("❌ FATAL ERROR in VoiceSatelliteProtocol initialization!", exc_info=True)
-        _LOGGER.critical("Program will exit immediately - fix the error above first!")
-        sys.exit(1)
-
-    while attempt <= max_attempts:
+    if args.tater_url:
         try:
-            server = await loop.create_server(
-                lambda: VoiceSatelliteProtocol(state),
-                host=host_ip_address,
-                port=args.port,
+            native_satellite = VoiceSatelliteProtocol(state)
+            native_client = TaterNativeClient(
+                native_satellite,
+                url=args.tater_url,
+                token=args.tater_token,
+                token_file=args.tater_token_file or None,
+                device_id=args.tater_device_id or state.name,
+                device_name=state.friendly_name,
+                board=args.tater_board,
+                room=args.tater_room,
+                firmware_version=state.version,
+                reconnect_seconds=args.tater_reconnect_seconds,
             )
-            break  # connection successful, exit the loop
-        except OSError as err:
-            message = err.strerror or str(err)
-            if err.errno == errno.EADDRINUSE:
-                message = "address already in use"
-            if attempt < max_attempts:
-                _LOGGER.warning(
-                    "Attempt %d/%d failed to bind on address (%s, %s): %s. Retrying in 1 second...",
-                    attempt,
-                    max_attempts,
-                    host_ip_address,
-                    args.port,
-                    message,
+        except Exception:
+            _LOGGER.critical("Fatal error initializing Tater native satellite transport", exc_info=True)
+            sys.exit(1)
+    else:
+        max_attempts = 15
+        attempt = 1
+
+        # Validate VoiceSatelliteProtocol initialization BEFORE starting server
+        # This catches errors like missing imports or broken initialization immediately
+        # instead of failing silently only when first client connects
+        _LOGGER.debug("Validating VoiceSatelliteProtocol initialization...")
+        try:
+            # Create test instance to run complete __init__ code path
+            test_protocol = VoiceSatelliteProtocol(state)
+            # Cleanup state reference
+            test_protocol.state.satellite = None
+            del test_protocol
+            _LOGGER.debug("✅ VoiceSatelliteProtocol validation successful")
+        except Exception:
+            _LOGGER.critical("❌ FATAL ERROR in VoiceSatelliteProtocol initialization!", exc_info=True)
+            _LOGGER.critical("Program will exit immediately - fix the error above first!")
+            sys.exit(1)
+
+        while attempt <= max_attempts:
+            try:
+                server = await loop.create_server(
+                    lambda: VoiceSatelliteProtocol(state),
+                    host=host_ip_address,
+                    port=args.port,
                 )
-                await asyncio.sleep(1)
-                attempt += 1
-            else:
-                _LOGGER.exception(
-                    "All %d attempts failed to bind on address (%s, %s): %s",
-                    max_attempts,
-                    host_ip_address,
-                    args.port,
-                    message,
-                )
-                sys.exit(1)
+                break  # connection successful, exit the loop
+            except OSError as err:
+                message = err.strerror or str(err)
+                if err.errno == errno.EADDRINUSE:
+                    message = "address already in use"
+                if attempt < max_attempts:
+                    _LOGGER.warning(
+                        "Attempt %d/%d failed to bind on address (%s, %s): %s. Retrying in 1 second...",
+                        attempt,
+                        max_attempts,
+                        host_ip_address,
+                        args.port,
+                        message,
+                    )
+                    await asyncio.sleep(1)
+                    attempt += 1
+                else:
+                    _LOGGER.exception(
+                        "All %d attempts failed to bind on address (%s, %s): %s",
+                        max_attempts,
+                        host_ip_address,
+                        args.port,
+                        message,
+                    )
+                    sys.exit(1)
 
     # ------------------------------------------------------------------
     # Audio processing thread
@@ -500,14 +557,15 @@ async def main() -> None:
     )
     process_audio_thread.start()
 
-    # Auto discovery (zeroconf, mDNS)
-    discovery = HomeAssistantZeroconf(
-        port=args.port,
-        name=state.name,
-        mac_address=state.mac_address,
-        host_ip_address=host_ip_address,
-    )
-    await discovery.register_server()
+    # Auto discovery (zeroconf, mDNS) is only used by ESPHome server mode.
+    if native_client is None:
+        discovery = HomeAssistantZeroconf(
+            port=args.port,
+            name=state.name,
+            mac_address=state.mac_address,
+            host_ip_address=host_ip_address,
+        )
+        await discovery.register_server()
 
     # ------------------------------------------------------------------
     # Start peripheral API and signal "getting started" to peripherals
@@ -531,18 +589,24 @@ async def main() -> None:
             await asyncio.sleep(args.peripheral_startup_wait)
 
     try:
-        async with server:  # type: ignore[union-attr]
-            _LOGGER.info("Server started (host=%s, port=%s)", host_ip_address, args.port)
-            await server.serve_forever()  # type: ignore[union-attr]
+        if native_client is not None:
+            _LOGGER.info("Tater native satellite mode started (url=%s, device_id=%s)", native_client.url, native_client.device_id)
+            await native_client.run_forever()
+        else:
+            async with server:  # type: ignore[union-attr]
+                _LOGGER.info("Server started (host=%s, port=%s)", host_ip_address, args.port)
+                await server.serve_forever()  # type: ignore[union-attr]
     except KeyboardInterrupt:
         pass
     finally:
+        if native_client is not None:
+            await native_client.close()
         state.audio_queue.put_nowait(None)
         process_audio_thread.join()
         if peripheral_api is not None:
             await peripheral_api.stop()
 
-    _LOGGER.debug("Server stopped")
+    _LOGGER.debug("Satellite stopped")
 
 
 # -----------------------------------------------------------------------------

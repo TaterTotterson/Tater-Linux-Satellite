@@ -32,6 +32,34 @@ if [ -n "${PORT}" ]; then
   EXTRA_ARGS+=( "--port" "$PORT" )
 fi
 
+if [ -n "${TATER_URL}" ]; then
+  EXTRA_ARGS+=( "--tater-url" "$TATER_URL" )
+fi
+
+if [ -n "${TATER_TOKEN}" ]; then
+  EXTRA_ARGS+=( "--tater-token" "$TATER_TOKEN" )
+fi
+
+if [ -n "${TATER_TOKEN_FILE}" ]; then
+  EXTRA_ARGS+=( "--tater-token-file" "$TATER_TOKEN_FILE" )
+fi
+
+if [ -n "${TATER_DEVICE_ID}" ]; then
+  EXTRA_ARGS+=( "--tater-device-id" "$TATER_DEVICE_ID" )
+fi
+
+if [ -n "${TATER_BOARD}" ]; then
+  EXTRA_ARGS+=( "--tater-board" "$TATER_BOARD" )
+fi
+
+if [ -n "${TATER_ROOM}" ]; then
+  EXTRA_ARGS+=( "--tater-room" "$TATER_ROOM" )
+fi
+
+if [ -n "${TATER_RECONNECT_SECONDS}" ]; then
+  EXTRA_ARGS+=( "--tater-reconnect-seconds" "$TATER_RECONNECT_SECONDS" )
+fi
+
 if [ -n "${AUDIO_INPUT_DEVICE}" ]; then
   EXTRA_ARGS+=( "--audio-input-device" "$AUDIO_INPUT_DEVICE" )
 fi

@@ -174,6 +174,13 @@ Environment=PREFERENCES_FILE="/home/pi/linux-voice-assistant/preferences.json"
 # Environment=NETWORK_INTERFACE="eth0"
 # Environment=HOST="0.0.0.0"
 # Environment=PORT="6053"
+# Environment=TATER_URL="http://tater.local:8501"
+# Environment=TATER_TOKEN="123456"
+# Environment=TATER_TOKEN_FILE="/home/pi/linux-voice-assistant/tater-token"
+# Environment=TATER_DEVICE_ID="linux-satellite-1"
+# Environment=TATER_BOARD="linux"
+# Environment=TATER_ROOM="office"
+# Environment=TATER_RECONNECT_SECONDS="2"
 # Environment=AUDIO_INPUT_DEVICE="default"
 # Environment=AUDIO_OUTPUT_DEVICE="default"
 # Environment=MIC_VOLUME="1.0"
@@ -263,6 +270,13 @@ The following variables can be configured in the `.env` or in the service file:
 | `NETWORK_INTERFACE` | Autodetected | network card for server |
 | `HOST` | Autodetected | API server IP-Address, can be 0.0.0.0 for all interfaces, but only one network card works for MAC-ADDRESS and ESP protocol |
 | `PORT` | `6053` | API server port |
+| `TATER_URL` | (optional) | Tater base/native WebSocket URL; enables outbound native satellite mode |
+| `TATER_TOKEN` | (optional) | Tater pairing code, device token, or API token |
+| `TATER_TOKEN_FILE` | (optional) | File used to load and persist the paired device token |
+| `TATER_DEVICE_ID` | generated LVA name | Stable native satellite device ID |
+| `TATER_BOARD` | `linux` | Board identifier reported to Tater |
+| `TATER_ROOM` | (optional) | Room reported to Tater |
+| `TATER_RECONNECT_SECONDS` | `2` | Native WebSocket reconnect delay |
 | `AUDIO_INPUT_DEVICE` | Autodetected | Audio input device name |
 | `AUDIO_OUTPUT_DEVICE` | Autodetected | Audio output device name |
 | `MIC_VOLUME` | Control microphone volume | 100 |

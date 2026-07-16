@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name        = "linux-voice-assistant"
 license     = {text = "Apache-2.0"}
-description = "Linux voice assistant for Home Assistant using the ESPHome protocol"
+description = "Linux voice assistant for Tater native satellites and Home Assistant ESPHome"
 readme      = "README.md"
 authors     = [
     {name = "The Home Assistant Authors", email = "hello@home-assistant.io"}
 ]
-keywords    = ["home", "assistant", "voice", "esphome", "linux"]
+keywords    = ["home", "assistant", "voice", "esphome", "linux", "tater"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -52,7 +52,8 @@ dev = [
 linux-voice-assistant = "linux_voice_assistant.__main__:run"
 
 [project.urls]
-"Source Code" = "http://github.com/OHF-Voice/linux-voice-assistant"
+"Source Code" = "https://github.com/TaterTotterson/linux-voice-assistant"
+"Upstream" = "https://github.com/OHF-Voice/linux-voice-assistant"
 
 [tool.setuptools]
 platforms = ["any"]
