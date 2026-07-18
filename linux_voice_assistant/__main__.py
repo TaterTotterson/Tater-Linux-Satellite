@@ -550,9 +550,10 @@ async def main() -> None:
     # ------------------------------------------------------------------
     # Audio processing thread
     # ------------------------------------------------------------------
+    process_audio_stop_event = threading.Event()
     process_audio_thread = threading.Thread(
         target=process_audio,
-        args=(state, mic, args.audio_input_block_size),
+        args=(state, mic, args.audio_input_block_size, process_audio_stop_event),
         daemon=True,
     )
     process_audio_thread.start()
@@ -601,8 +602,11 @@ async def main() -> None:
     finally:
         if native_client is not None:
             await native_client.close()
+        process_audio_stop_event.set()
         state.audio_queue.put_nowait(None)
-        process_audio_thread.join()
+        process_audio_thread.join(timeout=3.0)
+        if process_audio_thread.is_alive():
+            _LOGGER.warning("Audio processing thread did not stop within 3 seconds")
         if peripheral_api is not None:
             await peripheral_api.stop()
 
@@ -612,8 +616,16 @@ async def main() -> None:
 # -----------------------------------------------------------------------------
 
 
-def process_audio(state: ServerState, mic, block_size: int):
+def process_audio(
+    state: ServerState,
+    mic,
+    block_size: int,
+    stop_event: Optional[threading.Event] = None,
+):
     """Process audio chunks from the microphone."""
+    if stop_event is None:
+        stop_event = threading.Event()
+
     n_channels = state.audio_input_channels
 
     wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
@@ -630,7 +642,7 @@ def process_audio(state: ServerState, mic, block_size: int):
     try:
         _LOGGER.debug("Opening audio input device: %s", mic.name)
         with mic.recorder(samplerate=16000, channels=n_channels, blocksize=block_size) as mic_in:
-            while True:
+            while not stop_event.is_set():
                 # Shape: (block_size, n_channels) for stereo, (block_size, 1) for mono.
                 raw = mic_in.record(block_size)  # float32, range [-1, 1]
                 mic_vol_scalar = max(0.1, min(1.0, state.mic_volume / 100.0))
