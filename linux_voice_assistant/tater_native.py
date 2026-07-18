@@ -8,6 +8,7 @@ and peripheral state machine from :mod:`linux_voice_assistant.satellite`.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -73,6 +74,16 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _websocket_header_options(headers: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Support both legacy and current ``websockets.connect`` header names."""
+    try:
+        parameters = inspect.signature(websockets.connect).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    header_argument = "additional_headers" if "additional_headers" in parameters else "extra_headers"
+    return {header_argument: headers}
 
 
 def _event_data(data: Any) -> dict[str, str]:
@@ -325,10 +336,10 @@ class TaterNativeClient:
             try:
                 async with websockets.connect(
                     self.url,
-                    extra_headers=self._headers(),
                     max_size=None,
                     ping_interval=20,
                     ping_timeout=20,
+                    **_websocket_header_options(self._headers()),
                 ) as websocket:
                     self._websocket = websocket
                     await self._run_connection(websocket)

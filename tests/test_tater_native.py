@@ -6,7 +6,7 @@ import websockets
 from aioesphomeapi.api_pb2 import VoiceAssistantAnnounceFinished, VoiceAssistantAudio, VoiceAssistantRequest
 from aioesphomeapi.model import VoiceAssistantEventType
 
-from linux_voice_assistant.tater_native import TaterNativeClient, _event_data, _voice_event, normalize_tater_url
+from linux_voice_assistant.tater_native import TaterNativeClient, _event_data, _voice_event, _websocket_header_options, normalize_tater_url
 
 
 def _json(frame: str) -> dict:
@@ -73,6 +73,12 @@ class TaterNativeTests(unittest.TestCase):
 
         self.assertEqual(event_type, VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_PROGRESS)
         self.assertEqual(data, {"tool": "weather", "type": "tool_call"})
+
+    def test_installed_websockets_header_argument_is_supported(self) -> None:
+        options = _websocket_header_options({"Authorization": "Bearer test"})
+
+        self.assertIn(next(iter(options)), {"extra_headers", "additional_headers"})
+        self.assertEqual(next(iter(options.values())), {"Authorization": "Bearer test"})
 
 
 class _FakeState:
