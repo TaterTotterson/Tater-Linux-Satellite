@@ -52,7 +52,7 @@ dev = [
 linux-voice-assistant = "linux_voice_assistant.__main__:run"
 
 [project.urls]
-"Source Code" = "https://github.com/TaterTotterson/linux-voice-assistant"
+"Source Code" = "https://github.com/TaterTotterson/Tater-Linux-Satellite"
 "Upstream" = "https://github.com/OHF-Voice/linux-voice-assistant"
 
 [tool.setuptools]

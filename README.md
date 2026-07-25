@@ -61,7 +61,7 @@ code visible.
 ### 2. Install the satellite
 
 ```sh
-git clone https://github.com/TaterTotterson/linux-voice-assistant.git
+git clone https://github.com/TaterTotterson/Tater-Linux-Satellite.git
 cd linux-voice-assistant
 ./script/setup
 ```
