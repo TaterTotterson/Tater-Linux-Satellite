@@ -21,11 +21,15 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import websockets
+
+# pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAudio,
     VoiceAssistantRequest,
 )
+
+# pylint: enable=no-name-in-module
 from aioesphomeapi.model import VoiceAssistantEventType
 from google.protobuf import message
 
@@ -76,10 +80,10 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
-def _websocket_header_options(headers: dict[str, str]) -> dict[str, dict[str, str]]:
+def _websocket_header_options(headers: dict[str, str]) -> dict[str, Any]:
     """Support both legacy and current ``websockets.connect`` header names."""
     try:
-        parameters = inspect.signature(websockets.connect).parameters
+        parameters: Any = inspect.signature(websockets.connect).parameters
     except (TypeError, ValueError):
         parameters = {}
     header_argument = "additional_headers" if "additional_headers" in parameters else "extra_headers"
@@ -343,7 +347,7 @@ class TaterNativeClient:
                 ) as websocket:
                     self._websocket = websocket
                     await self._run_connection(websocket)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as exc:  # pylint: disable=broad-except
                 error = exc
