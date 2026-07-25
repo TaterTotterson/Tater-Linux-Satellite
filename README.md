@@ -15,6 +15,7 @@ Because it runs on a full Linux system and offers access significantly more loca
 ## Features
 
 - Works with [Home Assistant](https://www.home-assistant.io/integrations/esphome/) using the [ESPHome](https://esphome.io/) protocol/API (via [aioesphomeapi](https://github.com/esphome/aioesphomeapi))
+- Works as an outbound native satellite for [Tater](https://github.com/TaterTotterson/Tater) using Tater's WebSocket and binary PCM protocol
 - Feature local on-device wake word detection using integrated [OpenWakeWord](https://github.com/dscripka/openWakeWord) or [MicroWakeWord](https://github.com/kahrendt/microWakeWord)
 - Supports multiple wake words and languages
 - Supports multiple architectures (linux/amd64 and linux/aarch64)
@@ -107,6 +108,13 @@ usage: __main__.py [-h] [--name NAME] [--audio-input-device AUDIO_INPUT_DEVICE] 
 | `--host`                        | IP-Address for ESPHome server, use 0.0.0.0 for all            | Autodetected                         |
 | `--network-interface`           | Network interface for ESPHome server                          | Autodetected                         |
 | `--port`                        | Port for ESPHome server                                       | 6053                                 |
+| `--tater-url`                   | Tater base URL or native WebSocket URL; enables native mode   | disabled                             |
+| `--tater-token`                 | Tater pairing code, device token, or API token                | empty                                |
+| `--tater-token-file`            | Load/save the durable device token returned after pairing     | empty                                |
+| `--tater-device-id`             | Stable native satellite ID reported to Tater                  | generated LVA name                   |
+| `--tater-board`                 | Board identifier reported to Tater                            | `linux`                              |
+| `--tater-room`                  | Room reported to Tater                                        | empty                                |
+| `--tater-reconnect-seconds`     | Delay between native WebSocket reconnect attempts             | 2.0                                  |
 | `--enable-thinking-sound`       | Enable thinking sound on startup                              | False                                |
 | `--peripheral-host`             | Bind address for the peripheral WebSocket API                 | 0.0.0.0                              |
 | `--peripheral-port`             | Port for the peripheral WebSocket API                         | 6055                                 |
@@ -114,6 +122,23 @@ usage: __main__.py [-h] [--name NAME] [--audio-input-device AUDIO_INPUT_DEVICE] 
 | `--disable-peripheral-api`      | Disable the peripheral WebSocket API entirely                 | False                                |
 | `--debug`                       | Print DEBUG messages to console                               | False                                |
 | `--output-only`                 | Enable output only mode                                       | False                                |
+
+### Tater native satellite mode
+
+Tater v94 and newer satellites connect outbound to Voice Core instead of exposing an ESPHome server. Start a pairing session in Tater's Voice settings, then run LVA with the displayed pairing code:
+
+```bash
+linux-voice-assistant \
+  --name "Reachy Mini" \
+  --tater-url http://tater.local:8501 \
+  --tater-token 123456 \
+  --tater-token-file ~/.config/linux-voice-assistant/tater-token \
+  --tater-device-id reachy-mini \
+  --tater-board reachy_mini \
+  --tater-room office
+```
+
+The base HTTP URL is converted to the native WebSocket endpoint automatically. After the first successful pairing, Tater returns a device token and LVA stores it in `--tater-token-file` with owner-only permissions. Native mode keeps local wake-word detection and audio playback, streams 16 kHz mono PCM to Tater, follows server-side VAD events, and reconnects automatically. Omit `--tater-url` to retain the original Home Assistant ESPHome server mode.
 
 💡 **Note:** There is a detailed explanation on the gain, noise suppression, and wake word sensitivity flags in the [audio options](docs/audio_options.md) file.
 

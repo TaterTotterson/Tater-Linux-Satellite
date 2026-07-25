@@ -1,5 +1,7 @@
 """Utility methods."""
 
+import platform
+import subprocess
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -73,7 +75,17 @@ def call_all(*callables: Optional[Callable[[], None]]) -> None:
 
 def get_default_interface():
     """Return the default network interface name, or None if not found."""
-    default_gateway = netifaces.default_gateway()
+    try:
+        default_gateway = netifaces.default_gateway()
+    except NotImplementedError:
+        # netifaces2 does not currently implement gateways() on macOS.
+        # Reachy Mini's mockup-sim runs apps on the host Mac, so use the
+        # native routing table there instead of failing app startup.
+        interface_name = _macos_default_interface()
+        if interface_name:
+            return interface_name
+        print("Default gateway lookup is not supported on this platform")
+        return None
 
     if not default_gateway:
         print("No default gateway found")
@@ -89,6 +101,29 @@ def get_default_interface():
     interface_name = gateway_info[1]
     # print(f"Default interface: {interface_name}")
     return interface_name
+
+
+def _macos_default_interface() -> Optional[str]:
+    if platform.system() != "Darwin":
+        return None
+
+    try:
+        result = subprocess.run(
+            ["route", "-n", "get", "default"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "interface":
+            interface_name = value.strip()
+            return interface_name or None
+    return None
 
 
 def get_default_ipv4(interface: str):
