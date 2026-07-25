@@ -139,8 +139,8 @@ settings.
   — native firmware for supported ESP32-S3 satellites
 - [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words) —
   shared wake-word packages and training requests
-- [Tater Voice Satellite for Reachy Mini](https://huggingface.co/spaces/TaterTotterson/tater_voice_sat)
-  — satellite-only Reachy Mini app
+- [Reachy Home Assistant Satellite](https://huggingface.co/spaces/TaterTotterson/reachy_home_assistant_satellite)
+  — preserved ESPHome-style Home Assistant satellite for Reachy Mini
 - [Tater Reachy Standalone](https://huggingface.co/spaces/TaterTotterson/tater_reachy_standalone)
   — Tater and its native satellite running together on Reachy Mini
 
