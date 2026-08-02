@@ -1,7 +1,8 @@
-<a id="tater-native-unreleased"></a>
-# Tater native fork - unreleased
+<a id="v1.1.13-tater1"></a>
+# v1.1.13-tater1 - 2026-08-02
 
 - Add an outbound Tater native satellite transport with pairing-token persistence, reconnects, heartbeats, binary PCM streaming, server-side VAD events, playback, and continued conversation support.
+- Queue consecutive TTS segments, preserve speaking state between them, and emit terminal playback events only after the complete response settles.
 - Keep the original Home Assistant ESPHome server mode as the default when `--tater-url` is omitted.
 - Add CLI, Docker, environment-variable, and systemd configuration for Tater native mode.
 

@@ -1,12 +1,14 @@
 import asyncio
 import json
+import threading
 import unittest
 
 import websockets
 from aioesphomeapi.api_pb2 import VoiceAssistantAnnounceFinished, VoiceAssistantAudio, VoiceAssistantRequest
 from aioesphomeapi.model import VoiceAssistantEventType
 
-from linux_voice_assistant.tater_native import TaterNativeClient, _event_data, _voice_event, _websocket_header_options, normalize_tater_url
+from linux_voice_assistant.satellite import _TtsSegmentCoordinator
+from linux_voice_assistant.tater_native import DEFAULT_TTS_SEGMENT_GRACE_SECONDS, TaterNativeClient, _event_data, _voice_event, _websocket_header_options, normalize_tater_url
 
 
 def _json(frame: str) -> dict:
@@ -80,6 +82,51 @@ class TaterNativeTests(unittest.TestCase):
         self.assertIn(next(iter(options)), {"extra_headers", "additional_headers"})
         self.assertEqual(next(iter(options.values())), {"Authorization": "Bearer test"})
 
+    def test_tts_segments_queue_and_finish_as_one_response(self) -> None:
+        played = []
+        finished = threading.Event()
+        coordinator = _TtsSegmentCoordinator(played.append, finished.set)
+        coordinator.set_grace_seconds(0.03)
+
+        self.assertTrue(coordinator.enqueue("segment-1.wav"))
+        self.assertTrue(coordinator.enqueue("segment-2.wav"))
+        self.assertEqual(played, ["segment-1.wav"])
+
+        coordinator.segment_finished()
+        self.assertEqual(played, ["segment-1.wav", "segment-2.wav"])
+        self.assertFalse(finished.is_set())
+
+        coordinator.segment_finished()
+        self.assertTrue(finished.wait(timeout=0.2))
+
+    def test_new_tts_segment_cancels_pending_response_finish(self) -> None:
+        played = []
+        finished = threading.Event()
+        coordinator = _TtsSegmentCoordinator(played.append, finished.set)
+        coordinator.set_grace_seconds(0.03)
+
+        coordinator.enqueue("segment-1.wav")
+        coordinator.segment_finished()
+        coordinator.enqueue("segment-2.wav")
+
+        self.assertFalse(finished.wait(timeout=0.08))
+        coordinator.segment_finished()
+        self.assertTrue(finished.wait(timeout=0.2))
+        self.assertEqual(played, ["segment-1.wav", "segment-2.wav"])
+
+    def test_duplicate_tts_url_is_not_replayed_during_settle_window(self) -> None:
+        played = []
+        finished = threading.Event()
+        coordinator = _TtsSegmentCoordinator(played.append, finished.set)
+        coordinator.set_grace_seconds(0.03)
+
+        coordinator.enqueue("segment.wav")
+        coordinator.segment_finished()
+
+        self.assertFalse(coordinator.enqueue("segment.wav"))
+        self.assertTrue(finished.wait(timeout=0.2))
+        self.assertEqual(played, ["segment.wav"])
+
 
 class _FakeState:
     name = "reachy-mini"
@@ -99,6 +146,9 @@ class _FakeSatellite:
         self._is_streaming_audio = False
         self._pipeline_active = False
         self._tts_played = False
+        self.tts_segment_grace_seconds = 0.0
+        self.queued_tts = []
+        self.stopped = False
 
     def send_messages(self, msgs) -> None:
         del msgs
@@ -114,8 +164,42 @@ class _FakeSatellite:
     def handle_voice_event(self, event_type, data) -> None:
         self.events.append((event_type, data))
 
+    def set_tts_segment_grace_seconds(self, seconds) -> None:
+        self.tts_segment_grace_seconds = float(seconds)
+
+    def queue_tts_segment(self, url, *, continue_conversation=False) -> None:
+        self.queued_tts.append((url, continue_conversation))
+
+    def stop(self) -> None:
+        self.stopped = True
+
 
 class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_playback_uses_segment_queue_and_protocol_stop(self) -> None:
+        satellite = _FakeSatellite()
+        client = TaterNativeClient(
+            satellite,
+            url="http://tater.local:8501",
+        )
+
+        client._handle_message(
+            {
+                "type": "play.url",
+                "payload": {
+                    "url": "segment.wav",
+                    "continue_conversation": True,
+                },
+            }
+        )
+        client._handle_message({"type": "play.stop", "payload": {}})
+
+        self.assertEqual(
+            satellite.tts_segment_grace_seconds,
+            DEFAULT_TTS_SEGMENT_GRACE_SECONDS,
+        )
+        self.assertEqual(satellite.queued_tts, [("segment.wav", True)])
+        self.assertTrue(satellite.stopped)
+
     async def test_client_handshake_and_voice_start(self) -> None:
         received = []
         got_start = asyncio.Event()

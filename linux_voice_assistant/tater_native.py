@@ -40,6 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 DEFAULT_RECONNECT_SECONDS = 2.0
 DEFAULT_HEARTBEAT_SECONDS = 5.0
+DEFAULT_TTS_SEGMENT_GRACE_SECONDS = 0.65
 OUTGOING_QUEUE_MAX = 512
 VOICE_PREROLL_MAX_CHUNKS = 64
 NATIVE_WS_PATH = "/api/tater/satellite/v1/ws"
@@ -189,6 +190,9 @@ class TaterNativeClient:
         # motion-aware protocol hooks.
         self._original_send_messages = satellite.send_messages
         satellite.send_messages = self.send_messages
+        configure_tts_segments = getattr(satellite, "set_tts_segment_grace_seconds", None)
+        if callable(configure_tts_segments):
+            configure_tts_segments(DEFAULT_TTS_SEGMENT_GRACE_SECONDS)
 
     @property
     def connected(self) -> bool:
@@ -459,7 +463,8 @@ class TaterNativeClient:
             if bool(getattr(self.satellite, "_is_streaming_audio", False)):
                 state = "listening"
             elif bool(getattr(self.satellite, "_pipeline_active", False)):
-                state = "speaking" if bool(getattr(self.satellite, "_tts_played", False)) else "thinking"
+                tts_response_active = bool(getattr(self.satellite, "tts_response_active", False))
+                state = "speaking" if tts_response_active or bool(getattr(self.satellite, "_tts_played", False)) else "thinking"
             self._queue_frame(
                 _json_frame(
                     "status",
@@ -502,16 +507,21 @@ class TaterNativeClient:
             url = str(payload.get("url") or "").strip()
             if not url:
                 return
-            if str(getattr(self.satellite, "_tts_url", "") or "") == url and bool(getattr(self.satellite, "_tts_played", False)):
-                return
-            self.satellite._tts_url = url  # pylint: disable=protected-access
-            self.satellite._tts_played = False  # pylint: disable=protected-access
-            self.satellite._continue_conversation = _truthy(payload.get("continue_conversation"))  # pylint: disable=protected-access
             if hasattr(self.satellite, "_reachy_tts_kind"):
                 self.satellite._reachy_tts_kind = str(payload.get("tts_kind") or "")  # pylint: disable=protected-access
             if str(payload.get("tts_kind") or "").strip().lower() in {"tool", "tool_progress"} and hasattr(self.satellite, "_reachy_tool_progress_active"):
                 self.satellite._reachy_tool_progress_active = True  # pylint: disable=protected-access
-            self.satellite.play_tts()
+            queue_tts_segment = getattr(self.satellite, "queue_tts_segment", None)
+            if callable(queue_tts_segment):
+                queue_tts_segment(
+                    url,
+                    continue_conversation=_truthy(payload.get("continue_conversation")),
+                )
+            else:
+                self.satellite._tts_url = url  # pylint: disable=protected-access
+                self.satellite._tts_played = False  # pylint: disable=protected-access
+                self.satellite._continue_conversation = _truthy(payload.get("continue_conversation"))  # pylint: disable=protected-access
+                self.satellite.play_tts()
             return
 
         if message_type == "play.tone":
@@ -521,7 +531,7 @@ class TaterNativeClient:
             return
 
         if message_type == "play.stop":
-            self.state.tts_player.stop()
+            self.satellite.stop()
             return
 
         if message_type == "error":

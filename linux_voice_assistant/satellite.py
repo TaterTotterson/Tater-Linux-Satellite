@@ -7,9 +7,10 @@ import posixpath
 import shutil
 import threading
 import time
+from collections import deque
 from collections.abc import Iterable
 from functools import partial
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
@@ -70,6 +71,154 @@ _LOGGER = logging.getLogger(__name__)
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
 _HAS_AUDIO_DATA2 = "data2" in {f.name for f in VoiceAssistantAudio.DESCRIPTOR.fields}
+
+
+class _TtsSegmentCoordinator:
+    """Queue TTS segments and settle the response after the last one."""
+
+    def __init__(
+        self,
+        play_segment: Callable[[str], None],
+        finish_response: Callable[[], None],
+    ) -> None:
+        self._play_segment = play_segment
+        self._finish_response = finish_response
+        self._grace_seconds = 0.0
+        self._lock = threading.Lock()
+        self._queue: deque[str] = deque()
+        self._current_url = ""
+        self._playing = False
+        self._generation = 0
+        self._finish_timer: Optional[threading.Timer] = None
+        self._force_finish = False
+        self._ignore_next_completion = False
+
+    @property
+    def response_active(self) -> bool:
+        with self._lock:
+            return self._playing or bool(self._queue) or self._finish_timer is not None
+
+    def set_grace_seconds(self, seconds: float) -> None:
+        with self._lock:
+            self._grace_seconds = max(0.0, float(seconds or 0.0))
+
+    def enqueue(self, url: str) -> bool:
+        media_url = str(url or "").strip()
+        if not media_url:
+            return False
+
+        start_url = ""
+        with self._lock:
+            if media_url == self._current_url or media_url in self._queue:
+                return False
+            timer = self._finish_timer
+            self._finish_timer = None
+            self._generation += 1
+            if self._playing:
+                self._queue.append(media_url)
+            else:
+                self._playing = True
+                self._current_url = media_url
+                start_url = media_url
+        if timer is not None:
+            timer.cancel()
+        if start_url:
+            self._play_segment(start_url)
+        return True
+
+    def playback_started(self, url: str) -> None:
+        media_url = str(url or "").strip()
+        with self._lock:
+            timer = self._finish_timer
+            self._finish_timer = None
+            self._generation += 1
+            self._playing = True
+            self._current_url = media_url
+        if timer is not None:
+            timer.cancel()
+
+    def segment_finished(self) -> None:
+        start_url = ""
+        finish_now = False
+        timer: Optional[threading.Timer] = None
+        with self._lock:
+            if self._ignore_next_completion:
+                self._ignore_next_completion = False
+                self._playing = False
+                self._current_url = ""
+                return
+
+            self._playing = False
+            if self._queue:
+                start_url = self._queue.popleft()
+                self._playing = True
+                self._current_url = start_url
+            elif self._force_finish or self._grace_seconds <= 0.0:
+                self._force_finish = False
+                self._current_url = ""
+                self._generation += 1
+                finish_now = True
+            else:
+                self._generation += 1
+                generation = self._generation
+                timer = threading.Timer(
+                    self._grace_seconds,
+                    self._finish_after_grace,
+                    args=(generation,),
+                )
+                timer.daemon = True
+                self._finish_timer = timer
+
+        if start_url:
+            self._play_segment(start_url)
+        elif timer is not None:
+            timer.start()
+        elif finish_now:
+            self._finish_response()
+
+    def begin_immediate_stop(self) -> bool:
+        with self._lock:
+            timer = self._finish_timer
+            had_response = self._playing or bool(self._queue) or timer is not None
+            self._finish_timer = None
+            self._queue.clear()
+            self._current_url = ""
+            self._generation += 1
+            self._force_finish = had_response
+        if timer is not None:
+            timer.cancel()
+        return had_response
+
+    def finish_stop_without_callback(self) -> bool:
+        with self._lock:
+            if not self._force_finish:
+                return False
+            self._force_finish = False
+            self._playing = False
+            self._current_url = ""
+            return True
+
+    def cancel(self, *, ignore_active_completion: bool = False) -> None:
+        with self._lock:
+            timer = self._finish_timer
+            self._finish_timer = None
+            self._queue.clear()
+            self._generation += 1
+            self._ignore_next_completion = ignore_active_completion and self._playing
+            self._playing = False
+            self._current_url = ""
+            self._force_finish = False
+        if timer is not None:
+            timer.cancel()
+
+    def _finish_after_grace(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation or self._playing or self._queue:
+                return
+            self._finish_timer = None
+            self._current_url = ""
+        _LOGGER.debug("TTS segment stream settled after %.2fs", self._grace_seconds)
+        self._finish_response()
 
 
 class VoiceSatelliteProtocol(APIServer):
@@ -346,6 +495,10 @@ class VoiceSatelliteProtocol(APIServer):
         self._timer_ring_start: Optional[float] = None
         self._processing = False
         self._pipeline_active = False
+        self._tts_segments = _TtsSegmentCoordinator(
+            self._start_queued_tts_segment,
+            self._tts_finished,
+        )
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
         self._disconnect_event = asyncio.Event()
 
@@ -492,7 +645,10 @@ class VoiceSatelliteProtocol(APIServer):
             # voice_assistant.stop behavior
             _LOGGER.debug("Muting voice assistant (voice_assistant.stop)")
             self._is_streaming_audio = False
+            had_tts_response = self._tts_segments.begin_immediate_stop()
             self.state.tts_player.stop()
+            if had_tts_response and self._tts_segments.finish_stop_without_callback():
+                self._tts_finished()
             # Stop any ongoing voice processing
             self.state.stop_word.is_active = False  # type: ignore[attr-defined]
             self.state.tts_player.play(self.state.mute_sound)
@@ -554,12 +710,14 @@ class VoiceSatelliteProtocol(APIServer):
                 _LOGGER.debug("TTS response text: %s", tts_text)
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END:
-            self._tts_url = data.get("url")
-            self.play_tts()
+            self.queue_tts_segment(
+                data.get("url", ""),
+                continue_conversation=self._continue_conversation,
+            )
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
             self._is_streaming_audio = False
-            if not self._tts_played:
+            if not self._tts_played and not self._tts_segments.response_active:
                 self._pipeline_active = False
                 self._tts_finished()
             # When TTS is playing, keep _pipeline_active = True to block
@@ -895,25 +1053,52 @@ class VoiceSatelliteProtocol(APIServer):
             self._emit(LVAEvent.IDLE)
             _LOGGER.debug("Stopping timer finished sound")
         else:
-            # tts_player.stop() invokes the done_callback (_tts_finished),
-            # so we don't call _tts_finished() again explicitly.
+            # The player normally invokes the segment coordinator callback;
+            # finalize directly only if that callback was not delivered.
+            had_tts_response = self._tts_segments.begin_immediate_stop()
             self.state.tts_player.stop()
+            if had_tts_response and self._tts_segments.finish_stop_without_callback():
+                self._tts_finished()
             _LOGGER.debug("TTS response stopped manually")
 
     # ------------------------------------------------------------------
     # TTS
     # ------------------------------------------------------------------
 
+    @property
+    def tts_response_active(self) -> bool:
+        """Return whether a TTS segment is playing, queued, or settling."""
+        return self._tts_segments.response_active
+
+    def set_tts_segment_grace_seconds(self, seconds: float) -> None:
+        """Delay terminal TTS events so native response segments stay grouped."""
+        self._tts_segments.set_grace_seconds(seconds)
+
+    def queue_tts_segment(self, url: str, *, continue_conversation: bool = False) -> bool:
+        """Queue a response segment without replacing audio already playing."""
+        if continue_conversation:
+            self._continue_conversation = True
+        return self._tts_segments.enqueue(url)
+
+    def _start_queued_tts_segment(self, url: str) -> None:
+        self._tts_url = url
+        self._tts_played = False
+        self.play_tts()
+
     def play_tts(self) -> None:
         if (not self._tts_url) or self._tts_played:
             return
 
         self._tts_played = True
+        self._tts_segments.playback_started(self._tts_url)
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
 
         self.state.active_wake_words.add(self.state.stop_word.id)
         self._emit(LVAEvent.TTS_SPEAKING)
-        self.state.tts_player.play(self._tts_url, done_callback=self._tts_finished)
+        self.state.tts_player.play(
+            self._tts_url,
+            done_callback=self._tts_segments.segment_finished,
+        )
 
     def _tts_finished(self) -> None:
         self._pipeline_active = False
@@ -1007,6 +1192,7 @@ class VoiceSatelliteProtocol(APIServer):
     def connection_lost(self, exc: Optional[Exception]) -> None:
         super().connection_lost(exc)
 
+        self._tts_segments.cancel(ignore_active_completion=True)
         self._disconnect_event.set()
         self._is_streaming_audio = False
         self._tts_url = None
