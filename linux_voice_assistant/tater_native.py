@@ -144,7 +144,7 @@ class TaterNativeClient:
         firmware_version: str = "",
         reconnect_seconds: float = DEFAULT_RECONNECT_SECONDS,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
-        capabilities: Optional[dict[str, bool]] = None,
+        capabilities: Optional[dict[str, Any]] = None,
     ) -> None:
         self.satellite = satellite
         self.state = satellite.state
@@ -171,9 +171,16 @@ class TaterNativeClient:
             "timers": False,
             "ota": False,
             "motion": self.board.lower().startswith("reachy"),
+            "persistent_media_sessions": True,
+            "audio_session_version": 1,
         }
         if capabilities:
-            self.capabilities.update({str(key): bool(value) for key, value in capabilities.items()})
+            self.capabilities.update(
+                {
+                    str(key): value if isinstance(value, (bool, int, float, str)) else bool(value)
+                    for key, value in capabilities.items()
+                }
+            )
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
@@ -184,6 +191,8 @@ class TaterNativeClient:
         self._audio_drops = 0
         self._voice_start_pending = False
         self._audio_preroll: deque[bytes] = deque(maxlen=VOICE_PREROLL_MAX_CHUNKS)
+        self._media_session_id = ""
+        self._media_group_id = ""
 
         # VoiceSatelliteProtocol already owns the complete local state machine.
         # Replacing only its serializer preserves subclasses such as Reachy's
@@ -465,6 +474,8 @@ class TaterNativeClient:
             elif bool(getattr(self.satellite, "_pipeline_active", False)):
                 tts_response_active = bool(getattr(self.satellite, "tts_response_active", False))
                 state = "speaking" if tts_response_active or bool(getattr(self.satellite, "_tts_played", False)) else "thinking"
+            elif self._media_session_id:
+                state = "playing"
             self._queue_frame(
                 _json_frame(
                     "status",
@@ -503,10 +514,32 @@ class TaterNativeClient:
                     self._queue_frame(self._audio_preroll.popleft())
             return
 
+        if message_type == "media.session.start":
+            self._start_media_session(payload)
+            return
+
+        if message_type == "media.session.stop":
+            self._stop_media_session(payload)
+            return
+
+        if message_type == "media.session.pause":
+            self._control_media_session(payload, "pause")
+            return
+
+        if message_type == "media.session.resume":
+            self._control_media_session(payload, "resume")
+            return
+
+        if message_type == "media.session.volume":
+            self._set_media_session_volume(payload)
+            return
+
         if message_type == "play.url":
             url = str(payload.get("url") or "").strip()
             if not url:
                 return
+            if self._media_session_id:
+                self._duck_media_for_speech(payload)
             if hasattr(self.satellite, "_reachy_tts_kind"):
                 self.satellite._reachy_tts_kind = str(payload.get("tts_kind") or "")  # pylint: disable=protected-access
             if str(payload.get("tts_kind") or "").strip().lower() in {"tool", "tool_progress"} and hasattr(self.satellite, "_reachy_tool_progress_active"):
@@ -536,6 +569,183 @@ class TaterNativeClient:
 
         if message_type == "error":
             _LOGGER.error("Tater native satellite error: %s", payload.get("error") or payload.get("message") or "unknown error")
+
+    def _start_media_session(self, payload: dict[str, Any]) -> None:
+        media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
+        session_id = str(payload.get("session_id") or "").strip()
+        group_id = str(payload.get("group_id") or "").strip()
+        media_url = str(media.get("url") or payload.get("url") or "").strip()
+        if not session_id or not media_url:
+            self._submit_media_event(
+                "media.session.finished",
+                session_id=session_id,
+                group_id=group_id,
+                ok=False,
+                reason="session_id and media.url are required",
+            )
+            return
+
+        player = getattr(self.state, "music_player", None)
+        play_persistent = getattr(player, "play_persistent", None)
+        play = getattr(player, "play", None)
+        if not callable(play_persistent) and not callable(play):
+            self._submit_media_event(
+                "media.session.finished",
+                session_id=session_id,
+                group_id=group_id,
+                ok=False,
+                reason="Persistent media player is unavailable",
+            )
+            return
+
+        previous_session_id = self._media_session_id
+        if previous_session_id and previous_session_id != session_id:
+            try:
+                player.stop()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("Could not stop the previous native media session", exc_info=True)
+
+        self._media_session_id = session_id
+        self._media_group_id = group_id
+        raw_volume = media.get("volume_percent")
+        try:
+            volume = max(0.0, min(100.0, float(100.0 if raw_volume is None else raw_volume)))
+        except (TypeError, ValueError):
+            volume = 100.0
+        player.set_volume(volume)
+
+        def media_event(event: str, detail: str) -> None:
+            if event == "started":
+                self._media_session_id = session_id
+                self._media_group_id = group_id
+                self._submit_media_event(
+                    "media.session.started",
+                    session_id=session_id,
+                    group_id=group_id,
+                    ok=True,
+                )
+                return
+            self._submit_media_event(
+                "media.session.finished",
+                session_id=session_id,
+                group_id=group_id,
+                ok=event != "error",
+                reason=detail,
+            )
+            if self._media_session_id == session_id:
+                self._media_session_id = ""
+                self._media_group_id = ""
+
+        try:
+            try:
+                start_position_ms = max(0, int(float(media.get("start_position_ms") or 0)))
+            except (TypeError, ValueError):
+                start_position_ms = 0
+            loop = _truthy(media.get("loop"))
+            if callable(play_persistent):
+                play_persistent(
+                    media_url,
+                    start_position_ms=start_position_ms,
+                    loop=loop,
+                    event_callback=media_event,
+                )
+            else:
+                play(
+                    media_url,
+                    done_callback=lambda: media_event("finished", ""),
+                )
+                media_event("started", "")
+        except Exception as exc:  # pylint: disable=broad-except
+            self._media_session_id = ""
+            self._media_group_id = ""
+            self._submit_media_event(
+                "media.session.finished",
+                session_id=session_id,
+                group_id=group_id,
+                ok=False,
+                reason=str(exc).strip() or "Could not start native music playback",
+            )
+
+    def _stop_media_session(self, payload: dict[str, Any]) -> None:
+        active_session_id = self._media_session_id
+        if not active_session_id:
+            return
+        requested_session_id = str(payload.get("session_id") or "").strip()
+        if requested_session_id and requested_session_id != active_session_id:
+            return
+        player = getattr(self.state, "music_player", None)
+        stop = getattr(player, "stop", None)
+        if callable(stop):
+            stop()
+
+    def _control_media_session(self, payload: dict[str, Any], action: str) -> None:
+        active_session_id = self._media_session_id
+        if not active_session_id:
+            return
+        requested_session_id = str(payload.get("session_id") or "").strip()
+        if requested_session_id and requested_session_id != active_session_id:
+            return
+        player = getattr(self.state, "music_player", None)
+        control = getattr(player, action, None)
+        if callable(control):
+            control()
+
+    def _set_media_session_volume(self, payload: dict[str, Any]) -> None:
+        active_session_id = self._media_session_id
+        if not active_session_id:
+            return
+        requested_session_id = str(payload.get("session_id") or "").strip()
+        if requested_session_id and requested_session_id != active_session_id:
+            return
+        try:
+            volume = max(0.0, min(100.0, float(payload.get("volume_percent") or 0.0)))
+        except (TypeError, ValueError):
+            return
+        player = getattr(self.state, "music_player", None)
+        set_volume = getattr(player, "set_volume", None)
+        if callable(set_volume):
+            set_volume(volume)
+
+    def _duck_media_for_speech(self, payload: dict[str, Any]) -> None:
+        ducking = payload.get("ducking") if isinstance(payload.get("ducking"), dict) else {}
+        raw_target = ducking.get("target_percent")
+        try:
+            factor = max(0.0, min(1.0, float(50.0 if raw_target is None else raw_target) / 100.0))
+        except (TypeError, ValueError):
+            factor = 0.5
+        player = getattr(self.state, "music_player", None)
+        duck = getattr(player, "duck", None)
+        if callable(duck):
+            duck(factor)
+
+    def _submit_media_event(
+        self,
+        message_type: str,
+        *,
+        session_id: str,
+        group_id: str,
+        ok: bool,
+        reason: str = "",
+    ) -> None:
+        event_payload: dict[str, Any] = {
+            "session_id": session_id,
+            "group_id": group_id,
+            "ok": bool(ok),
+        }
+        if message_type == "media.session.started":
+            actual_start_us = time.monotonic_ns() // 1000
+            event_payload.update(
+                {
+                    "channel": "stereo",
+                    "sample_rate_hz": 48000,
+                    "scheduled_start_us": actual_start_us,
+                    "actual_start_us": actual_start_us,
+                    "late_by_us": 0,
+                }
+            )
+        if reason:
+            event_payload["reason"] = reason
+        self._submit_frame(_json_frame(message_type, event_payload))
 
     async def close(self) -> None:
         stop = self._stop

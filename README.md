@@ -28,6 +28,8 @@ word, and optional peripherals.
 - Durable per-device token stored with owner-only permissions
 - 16 kHz mono PCM audio streaming to Tater
 - Reply, announcement, timer, and continued-conversation playback
+- Persistent native music playback with stop, pause/resume, volume, looping,
+  resume positions, session status, and speech ducking
 - Local
   [microWakeWord](https://github.com/kahrendt/microWakeWord) and
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection

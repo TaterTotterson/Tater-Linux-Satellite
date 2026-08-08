@@ -63,6 +63,28 @@ class MpvMediaPlayer:
         next_url = self._playlist.pop(0)
         self._player.play(next_url, done_callback=self._on_track_finished, stop_first=stop_first)
 
+    def play_persistent(
+        self,
+        url: str,
+        *,
+        start_position_ms: int = 0,
+        loop: bool = False,
+        event_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        """Play a native Tater media session with MPV controls and status."""
+        self._player.configure_persistent_media(
+            start_position_ms=max(0, int(start_position_ms or 0)),
+            loop=bool(loop),
+        )
+
+        def finished() -> None:
+            if event_callback is not None:
+                event_callback("finished", "")
+
+        self.play(url, done_callback=finished)
+        if event_callback is not None:
+            event_callback("started", "")
+
     def _on_track_finished(self) -> None:
         """Called when a track finishes - plays next or invokes done callback."""
         if self._playlist:

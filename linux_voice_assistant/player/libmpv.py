@@ -83,6 +83,12 @@ class LibMpvPlayer(AudioPlayer):
         self._mpv.pause = stop_first
         self._mpv.play(url)
 
+    def configure_persistent_media(self, *, start_position_ms: int = 0, loop: bool = False) -> None:
+        """Configure the next long-form media item without affecting TTS players."""
+        with self._state_lock:
+            self._mpv["start"] = max(0.0, float(start_position_ms or 0) / 1000.0)
+            self._mpv["loop-file"] = "inf" if loop else "no"
+
     def pause(self) -> None:
         """Pause playback."""
         with self._state_lock:

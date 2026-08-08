@@ -137,9 +137,38 @@ class _FakeState:
     satellite = None
 
 
+class _FakeMusicPlayer:
+    def __init__(self) -> None:
+        self.calls = []
+        self.event_callback = None
+
+    def set_volume(self, volume) -> None:
+        self.calls.append(("volume", volume))
+
+    def play_persistent(self, url, **kwargs) -> None:
+        self.calls.append(("play", url, kwargs["start_position_ms"], kwargs["loop"]))
+        self.event_callback = kwargs["event_callback"]
+        self.event_callback("started", "")
+
+    def pause(self) -> None:
+        self.calls.append(("pause",))
+
+    def resume(self) -> None:
+        self.calls.append(("resume",))
+
+    def duck(self, factor) -> None:
+        self.calls.append(("duck", factor))
+
+    def stop(self) -> None:
+        self.calls.append(("stop",))
+        if self.event_callback is not None:
+            self.event_callback("finished", "stopped")
+
+
 class _FakeSatellite:
     def __init__(self) -> None:
         self.state = _FakeState()
+        self.state.music_player = _FakeMusicPlayer()
         self.state.satellite = self
         self.emitted = []
         self.events = []
@@ -175,6 +204,76 @@ class _FakeSatellite:
 
 
 class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_persistent_media_session_controls_music_player(self) -> None:
+        satellite = _FakeSatellite()
+        client = TaterNativeClient(
+            satellite,
+            url="http://tater.local:8501",
+        )
+        submitted = []
+        client._submit_frame = submitted.append
+
+        client._handle_message(
+            {
+                "type": "media.session.start",
+                "payload": {
+                    "session_id": "music-1",
+                    "media": {
+                        "url": "http://tater.local/song.mp3",
+                        "volume_percent": 64,
+                        "start_position_ms": 3500,
+                        "loop": True,
+                    },
+                },
+            }
+        )
+        client._handle_message(
+            {
+                "type": "play.url",
+                "payload": {
+                    "url": "http://tater.local/reply.wav",
+                    "ducking": {"target_percent": 20},
+                },
+            }
+        )
+        client._handle_message(
+            {
+                "type": "media.session.volume",
+                "payload": {"session_id": "music-1", "volume_percent": 35},
+            }
+        )
+        client._handle_message(
+            {"type": "media.session.pause", "payload": {"session_id": "music-1"}}
+        )
+        client._handle_message(
+            {"type": "media.session.resume", "payload": {"session_id": "music-1"}}
+        )
+        client._handle_message(
+            {"type": "media.session.stop", "payload": {"session_id": "music-1"}}
+        )
+
+        self.assertTrue(client.capabilities["persistent_media_sessions"])
+        self.assertEqual(client.capabilities["audio_session_version"], 1)
+        self.assertEqual(
+            satellite.state.music_player.calls,
+            [
+                ("volume", 64.0),
+                ("play", "http://tater.local/song.mp3", 3500, True),
+                ("duck", 0.2),
+                ("volume", 35.0),
+                ("pause",),
+                ("resume",),
+                ("stop",),
+            ],
+        )
+        self.assertEqual(satellite.queued_tts, [("http://tater.local/reply.wav", False)])
+        events = [_json(frame) for frame in submitted]
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["media.session.started", "media.session.finished"],
+        )
+        self.assertTrue(events[1]["payload"]["ok"])
+
     async def test_native_playback_uses_segment_queue_and_protocol_stop(self) -> None:
         satellite = _FakeSatellite()
         client = TaterNativeClient(
@@ -263,6 +362,7 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(received[0]["type"], "hello")
         self.assertTrue(received[0]["payload"]["capabilities"]["motion"])
+        self.assertTrue(received[0]["payload"]["capabilities"]["persistent_media_sessions"])
         self.assertEqual(received[1]["type"], "voice.start")
         self.assertEqual(received[1]["payload"]["wake_word"], "hey reachy")
         self.assertEqual(received[2], b"\x01\x02")
