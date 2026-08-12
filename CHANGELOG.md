@@ -1,3 +1,8 @@
+<a id="v1.1.13-tater2"></a>
+# v1.1.13-tater2 - 2026-08-12
+
+- Add persistent Tater-native music sessions with stop, pause/resume, volume, looping, resume positions, playback status, and automatic speech ducking.
+
 <a id="v1.1.13-tater1"></a>
 # v1.1.13-tater1 - 2026-08-02
 
