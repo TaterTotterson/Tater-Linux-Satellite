@@ -35,6 +35,8 @@ word, and optional peripherals.
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection
 - Custom wake-word support through
   [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words)
+- Live Tater Voice settings for wake word, wake sound, output volume, and
+  peripheral LED color, brightness, and phase animations
 - Automatic reconnect and session recovery
 - PulseAudio and PipeWire audio support
 - Optional WebSocket API for buttons, LEDs, and other peripherals
@@ -89,6 +91,12 @@ is saved to `--tater-token-file`; later starts can omit `--tater-token`.
 
 The satellite reconnects automatically when Tater or the network becomes
 available again.
+
+When native mode connects, Tater sends the device's current Voice settings.
+Changes made later in Tater are applied without restarting the satellite and
+are cached for the next boot. The bundled Hey Tater model and wake sounds work
+offline; catalog/custom wake words and custom sounds are downloaded once and
+then reused from the satellite's download directory.
 
 ## Audio And Wake Words
 

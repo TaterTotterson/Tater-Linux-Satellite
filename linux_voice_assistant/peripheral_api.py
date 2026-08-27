@@ -138,6 +138,8 @@ class LVAEvent(str, Enum):
     VOLUME_MUTED = "volume_muted"
     ZEROCONF = "zeroconf"
     LIGHT_COMMAND = "light_command"
+    TOOL_CALL = "tool_call"
+    SETTINGS = "settings"
 
 
 class LVACommand(str, Enum):
@@ -270,6 +272,7 @@ class PeripheralAPIServer:
                     "ha_connected": state.connected,
                     "last_stt_text": self._last_stt_text,
                     "last_tts_text": self._last_tts_text,
+                    "settings": dict(state.native_settings),
                 },
             }
         )
@@ -575,6 +578,7 @@ class PeripheralAPIServer:
             LVAEvent.WAKE_WORD_DETECTED,
             LVAEvent.LISTENING,
             LVAEvent.THINKING,
+            LVAEvent.TOOL_CALL,
             LVAEvent.TTS_SPEAKING,
             LVAEvent.TTS_FINISHED,
             LVAEvent.IDLE,

@@ -109,6 +109,8 @@ These are all the events LVA emits. Your peripheral script receives them and rea
 |-------|------|-------------|
 | `wake_word_detected` | — | The configured wake word was detected. The wakeup chime is now playing. Start your "wake" animation here. |
 | `listening` | — | The wakeup chime has finished and LVA is now streaming audio to Home Assistant for speech-to-text. Show a "listening" animation. |
+| `tool_call` | Tater tool progress data | Tater started a tool call. Show the configured tool animation until another pipeline-state event arrives. |
+| `settings` | `{"settings": object}` | Tater native live settings changed. The snapshot includes LED color, brightness, and the listening, thinking, tool-call, and replying animation names. |
 | `stt_text` | `{"text": str}` | Home Assistant returned the recognised speech transcript. Use this to show what the user said on a display or LED ticker. |
 | `thinking` | — | LVA has stopped streaming audio and Home Assistant is processing the intent. Show a "thinking" animation. |
 | `tts_text` | `{"text": str}` | Home Assistant returned the assistant's text response, just before TTS audio begins playing. Use this to display the reply on a screen. |

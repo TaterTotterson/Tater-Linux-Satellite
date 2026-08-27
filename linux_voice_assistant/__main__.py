@@ -18,6 +18,7 @@ from getmac import get_mac_address  # type: ignore
 from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
 from pyopen_wakeword import OpenWakeWord, OpenWakeWordFeatures
 
+from .live_settings import apply_live_settings
 from .models import Preferences, ServerState, WakeWordType
 from .mpv_player import MpvMediaPlayer
 from .peripheral_api import LVAEvent, PeripheralAPIServer
@@ -378,6 +379,7 @@ async def main() -> None:
         wake_word_dirs.append(oww_dir)
 
     wake_word_dirs.append(args.download_dir / "external_wake_words")
+    wake_word_dirs.append(args.download_dir / "tater_native_wake_words")
     available_wake_words = find_available_wake_words(wake_word_dirs, args.stop_model)
 
     # Load preferences
@@ -462,7 +464,20 @@ async def main() -> None:
         mic_noise_suppression=preferences.mic_noise_suppression,
         audio_input_channels=args.audio_input_channels,
         timer_max_ring_seconds=args.timer_max_ring_seconds,
+        native_settings=dict(preferences.native_settings),
     )
+
+    if preferences.native_settings:
+        try:
+            apply_live_settings(
+                state,
+                preferences.native_settings,
+                allow_download=False,
+                persist=False,
+                notify=False,
+            )
+        except Exception:
+            _LOGGER.warning("Could not restore cached Tater live settings", exc_info=True)
 
     if fallback_used:
         # Fallback to the default model was used, save as active wake words
@@ -653,6 +668,7 @@ def process_audio(
     n_channels = state.audio_input_channels
 
     wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
+    wake_words_initialized = False
     micro_features: Optional[MicroWakeWordFeatures] = None
     micro_inputs: List[np.ndarray] = []
 
@@ -698,10 +714,11 @@ def process_audio(
                     continue
 
                 # WAKE WORD
-                if (not wake_words) or (state.wake_words_changed and state.wake_words):
+                if (not wake_words_initialized) or state.wake_words_changed:
                     # Update list of wake word models to process
                     state.wake_words_changed = False
                     wake_words = [ww for ww in state.wake_words.values() if ww.id in state.active_wake_words]
+                    wake_words_initialized = True
 
                     # TODO: Load default stop word value from json into state and preferences missing.
 

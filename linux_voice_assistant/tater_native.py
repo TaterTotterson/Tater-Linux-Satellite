@@ -173,6 +173,7 @@ class TaterNativeClient:
             "motion": self.board.lower().startswith("reachy"),
             "persistent_media_sessions": True,
             "audio_session_version": 1,
+            "settings": True,
         }
         if capabilities:
             self.capabilities.update(
@@ -492,6 +493,22 @@ class TaterNativeClient:
         message_type = str(body.get("type") or "").strip()
         raw_payload = body.get("payload")
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+
+        if message_type == "settings":
+            from .live_settings import apply_live_settings
+
+            try:
+                applied = apply_live_settings(self.state, payload)
+                result = {"ok": True, "settings": applied}
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.exception("Could not apply Tater live settings")
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "settings": dict(getattr(self.state, "native_settings", {}) or {}),
+                }
+            self._submit_frame(_json_frame("settings.changed", result, message_id=str(body.get("id") or "")))
+            return
 
         if message_type == "voice.event":
             event_type, data = _voice_event(payload.get("event"), payload.get("data"))
