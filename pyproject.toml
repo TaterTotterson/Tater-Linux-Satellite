@@ -64,6 +64,9 @@ include-package-data = true
 include = ["linux_voice_assistant", "linux_voice_assistant.*"]
 exclude = ["tests", "tests.*"]
 
+[tool.setuptools.package-data]
+linux_voice_assistant = ["assets/tater_native/*.wav"]
+
 [tool.black]
 line-length = 200
 target-version = ['py312', 'py313']

@@ -16,8 +16,7 @@ from .models import AvailableWakeWord, WakeWordType
 
 _LOGGER = logging.getLogger(__name__)
 
-_REPO_DIR = Path(__file__).resolve().parent.parent
-_SOUNDS_DIR = _REPO_DIR / "sounds" / "tater_native"
+_SOUNDS_DIR = Path(__file__).resolve().parent / "assets" / "tater_native"
 _MAX_WAKE_CONFIG_BYTES = 64 * 1024
 _MAX_WAKE_MODEL_BYTES = 4 * 1024 * 1024
 _MAX_WAKE_SOUND_BYTES = 4 * 1024 * 1024
