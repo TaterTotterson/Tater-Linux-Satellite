@@ -27,7 +27,9 @@ word, and optional peripherals.
 - Native Tater pairing with a short pairing code
 - Durable per-device token stored with owner-only permissions
 - 16 kHz mono PCM audio streaming to Tater
-- Reply, announcement, timer, and continued-conversation playback
+- Local Tater timers with list, cancel, snooze, offline countdown, alarm
+  playback, stop-word dismissal, and peripheral timer events
+- Reply, announcement, and continued-conversation playback
 - Persistent native music playback with stop, pause/resume, volume, looping,
   resume positions, session status, and speech ducking
 - Local
@@ -155,12 +157,18 @@ settings.
 - [Tater](https://github.com/TaterTotterson/Tater) — the Tater Assistant core
 - [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
   — native firmware for supported ESP32-S3 satellites
+- [Tater SAT1 RPi](https://github.com/TaterTotterson/Tater-SAT1-RPi)
+  — Raspberry Pi satellite-only and Tater Embedded images for Satellite1
+- [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
+  — Tater-native firmware for the ThirdReality S420 Linux satellite
 - [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words) —
   shared wake-word packages and training requests
 - [Reachy Home Assistant Satellite](https://huggingface.co/spaces/TaterTotterson/reachy_home_assistant_satellite)
   — preserved ESPHome-style Home Assistant satellite for Reachy Mini
 - [Tater Reachy Standalone](https://huggingface.co/spaces/TaterTotterson/tater_reachy_standalone)
   — Tater and its native satellite running together on Reachy Mini
+- [Reachy Tater Embedded](https://huggingface.co/spaces/TaterTotterson/reachy_tater_embedded)
+  — the full embedded Tater experience and native satellite on Reachy Mini
 
 ## Development
 

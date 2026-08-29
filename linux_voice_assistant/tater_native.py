@@ -35,6 +35,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 from aioesphomeapi.model import VoiceAssistantEventType
 from google.protobuf import message
 
+from .native_timers import NativeTimerManager
 from .peripheral_api import LVAEvent
 
 _LOGGER = logging.getLogger(__name__)
@@ -210,7 +211,7 @@ class TaterNativeClient:
             "continued_chat_reopen": True,
             "barge_in": False,
             "tool_call_mode": True,
-            "timers": False,
+            "timers": True,
             "ota": False,
             "motion": self.board.lower().startswith("reachy"),
             "persistent_media_sessions": True,
@@ -245,6 +246,10 @@ class TaterNativeClient:
         self._wake_verifier_last_reason = ""
         self._media_session_id = ""
         self._media_group_id = ""
+        self._native_timers = NativeTimerManager(
+            satellite,
+            lambda message_type, payload: self._submit_frame(_json_frame(message_type, payload)),
+        )
 
         # VoiceSatelliteProtocol already owns the complete local state machine.
         # Replacing only its serializer preserves subclasses such as Reachy's
@@ -687,6 +692,7 @@ class TaterNativeClient:
         self._connected = True
         self.state.connected = True
         self.state.satellite = self.satellite
+        self._native_timers.connected()
         self.satellite._emit(LVAEvent.ZEROCONF, {"status": "connected"})  # pylint: disable=protected-access
         _LOGGER.info(
             "Connected to Tater native satellite API selector=%s device_id=%s board=%s room=%s",
@@ -719,6 +725,7 @@ class TaterNativeClient:
             # server after a disconnect. Native mode reconnects the same object.
             self.state.satellite = self.satellite
             self.state.connected = False
+            self._native_timers.restore_ringing()
 
     async def _reader(self, websocket: Any) -> None:
         async for raw in websocket:
@@ -751,17 +758,19 @@ class TaterNativeClient:
                 state = "speaking" if tts_response_active or bool(getattr(self.satellite, "_tts_played", False)) else "thinking"
             elif self._media_session_id:
                 state = "playing"
+            status_payload = {
+                "state": state,
+                "uptime_s": int(time.monotonic() - self._started_monotonic),
+                "connected": True,
+                "audio_tx_dropped": self._audio_drops,
+                "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
+                "wake_engine": {"verifier": self._wake_verifier_status()},
+            }
+            status_payload.update(self._native_timers.status())
             self._queue_frame(
                 _json_frame(
                     "status",
-                    {
-                        "state": state,
-                        "uptime_s": int(time.monotonic() - self._started_monotonic),
-                        "connected": True,
-                        "audio_tx_dropped": self._audio_drops,
-                        "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
-                        "wake_engine": {"verifier": self._wake_verifier_status()},
-                    },
+                    status_payload,
                 )
             )
 
@@ -769,6 +778,9 @@ class TaterNativeClient:
         message_type = str(body.get("type") or "").strip()
         raw_payload = body.get("payload")
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+
+        if self._native_timers.handle_message(body):
+            return
 
         if message_type == "settings":
             from .live_settings import apply_live_settings
@@ -1067,6 +1079,7 @@ class TaterNativeClient:
         self._submit_frame(_json_frame(message_type, event_payload))
 
     async def close(self) -> None:
+        await self._native_timers.close()
         stop = self._stop
         if stop is not None:
             stop.set()
