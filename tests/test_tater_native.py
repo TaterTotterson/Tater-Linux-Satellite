@@ -7,6 +7,7 @@ import websockets
 from aioesphomeapi.api_pb2 import VoiceAssistantAnnounceFinished, VoiceAssistantAudio, VoiceAssistantRequest
 from aioesphomeapi.model import VoiceAssistantEventType
 
+from linux_voice_assistant.peripheral_api import LVAEvent
 from linux_voice_assistant.satellite import _TtsSegmentCoordinator
 from linux_voice_assistant.tater_native import DEFAULT_TTS_SEGMENT_GRACE_SECONDS, TaterNativeClient, _event_data, _voice_event, _websocket_header_options, normalize_tater_url
 
@@ -81,6 +82,26 @@ class TaterNativeTests(unittest.TestCase):
 
         self.assertIn(next(iter(options)), {"extra_headers", "additional_headers"})
         self.assertEqual(next(iter(options.values())), {"Authorization": "Bearer test"})
+
+    def test_reports_physical_volume_change_as_native_settings(self) -> None:
+        satellite = type(
+            "Satellite",
+            (),
+            {
+                "state": _FakeState(),
+                "send_messages": lambda _self, _messages: None,
+                "set_tts_segment_grace_seconds": lambda _self, _seconds: None,
+            },
+        )()
+        client = TaterNativeClient(satellite, url="http://tater.local:8501")
+        submitted = []
+        client._submit_frame = submitted.append
+
+        client.report_settings({"volume_percent": 65})
+
+        body = _json(submitted[0])
+        self.assertEqual(body["type"], "settings.changed")
+        self.assertEqual(body["payload"], {"ok": True, "settings": {"volume_percent": 65}})
 
     def test_tts_segments_queue_and_finish_as_one_response(self) -> None:
         played = []
@@ -298,6 +319,26 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(satellite.queued_tts, [("segment.wav", True)])
         self.assertTrue(satellite.stopped)
+
+    async def test_tater_visual_states_reach_peripherals_before_playback(self) -> None:
+        satellite = _FakeSatellite()
+        client = TaterNativeClient(satellite, url="http://tater.local:8501")
+
+        client._handle_message({"type": "state", "payload": {"state": "thinking"}})
+        client._handle_message(
+            {
+                "type": "state",
+                "payload": {"state": "tool_call", "tool": "weather"},
+            }
+        )
+
+        self.assertEqual(
+            satellite.emitted,
+            [
+                (LVAEvent.THINKING, None),
+                (LVAEvent.TOOL_CALL, {"state": "tool_call", "tool": "weather"}),
+            ],
+        )
 
     async def test_client_handshake_and_voice_start(self) -> None:
         received = []
