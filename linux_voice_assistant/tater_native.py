@@ -12,6 +12,8 @@ import inspect
 import json
 import logging
 import os
+import struct
+import threading
 import time
 import uuid
 from collections import deque
@@ -44,6 +46,15 @@ DEFAULT_TTS_SEGMENT_GRACE_SECONDS = 0.65
 OUTGOING_QUEUE_MAX = 512
 VOICE_PREROLL_MAX_CHUNKS = 64
 NATIVE_WS_PATH = "/api/tater/satellite/v1/ws"
+WAKE_VERIFIER_MAGIC = b"TWV1"
+WAKE_VERIFIER_VERSION = 1
+WAKE_VERIFIER_CODEC_PCM16_LE = 1
+WAKE_VERIFIER_FLAG_ENFORCE = 0x01
+WAKE_VERIFIER_HEADER = struct.Struct("<4sBBHIII")
+WAKE_VERIFIER_SAMPLE_RATE = 16000
+WAKE_VERIFIER_MIN_CAPTURE_MS = 500
+WAKE_VERIFIER_MAX_WINDOW_MS = 2000
+WAKE_VERIFIER_MAX_OUTSTANDING = 32
 
 
 def _envelope(message_type: str, payload: Optional[dict[str, Any]] = None, *, message_id: str = "") -> dict[str, Any]:
@@ -79,6 +90,37 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        number = int(default)
+    return max(minimum, min(maximum, number))
+
+
+def build_wake_verifier_packet(pcm: bytes, *, request_id: int, enforce: bool) -> bytes:
+    """Build the binary STT wake-verification packet used by Tater Native."""
+    audio = bytes(pcm or b"")
+    if len(audio) % 2:
+        raise ValueError("wake verifier PCM must contain complete 16-bit samples")
+    sample_count = len(audio) // 2
+    if sample_count < 1 or sample_count > (WAKE_VERIFIER_SAMPLE_RATE * 2):
+        raise ValueError(f"invalid wake verifier sample count: {sample_count}")
+    flags = WAKE_VERIFIER_FLAG_ENFORCE if enforce else 0
+    return (
+        WAKE_VERIFIER_HEADER.pack(
+            WAKE_VERIFIER_MAGIC,
+            WAKE_VERIFIER_VERSION,
+            WAKE_VERIFIER_CODEC_PCM16_LE,
+            flags,
+            int(request_id) & 0xFFFFFFFF,
+            WAKE_VERIFIER_SAMPLE_RATE,
+            sample_count,
+        )
+        + audio
+    )
 
 
 def _websocket_header_options(headers: dict[str, str]) -> dict[str, Any]:
@@ -161,7 +203,7 @@ class TaterNativeClient:
         self.firmware_version = str(firmware_version or getattr(self.state, "version", "") or "unknown").strip()
         self.reconnect_seconds = max(0.25, float(reconnect_seconds or DEFAULT_RECONNECT_SECONDS))
         self.heartbeat_seconds = max(1.0, float(heartbeat_seconds or DEFAULT_HEARTBEAT_SECONDS))
-        self.capabilities = {
+        self.capabilities: dict[str, Any] = {
             "microphone": not bool(getattr(self.state, "output_only", False)),
             "speaker": True,
             "local_wake": not bool(getattr(self.state, "output_only", False)),
@@ -174,14 +216,10 @@ class TaterNativeClient:
             "persistent_media_sessions": True,
             "audio_session_version": 1,
             "settings": True,
+            "wake_verifier": True,
         }
         if capabilities:
-            self.capabilities.update(
-                {
-                    str(key): value if isinstance(value, (bool, int, float, str)) else bool(value)
-                    for key, value in capabilities.items()
-                }
-            )
+            self.capabilities.update({str(key): value if isinstance(value, (bool, int, float, str)) else bool(value) for key, value in capabilities.items()})
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
@@ -192,6 +230,19 @@ class TaterNativeClient:
         self._audio_drops = 0
         self._voice_start_pending = False
         self._audio_preroll: deque[bytes] = deque(maxlen=VOICE_PREROLL_MAX_CHUNKS)
+        self._wake_audio: deque[bytes] = deque()
+        self._wake_audio_bytes = 0
+        self._wake_audio_lock = threading.Lock()
+        self._wake_verifier_generation = 0
+        self._wake_verifier_requests: dict[int, bool] = {}
+        self._wake_verifier_pending_id = 0
+        self._wake_verifier_pending_word: Any = None
+        self._wake_verifier_timeout: Optional[asyncio.TimerHandle] = None
+        self._wake_verifier_gate = threading.Event()
+        self._wake_verifier_completed = 0
+        self._wake_verifier_rejections = 0
+        self._wake_verifier_fail_open = 0
+        self._wake_verifier_last_reason = ""
         self._media_session_id = ""
         self._media_group_id = ""
 
@@ -200,6 +251,12 @@ class TaterNativeClient:
         # motion-aware protocol hooks.
         self._original_send_messages = satellite.send_messages
         satellite.send_messages = self.send_messages
+        self._original_handle_audio = getattr(satellite, "handle_audio", None)
+        if callable(self._original_handle_audio):
+            satellite.handle_audio = self.handle_audio
+        self._original_wakeup = getattr(satellite, "wakeup", None)
+        if callable(self._original_wakeup):
+            satellite.wakeup = self.wakeup
         configure_tts_segments = getattr(satellite, "set_tts_segment_grace_seconds", None)
         if callable(configure_tts_segments):
             configure_tts_segments(DEFAULT_TTS_SEGMENT_GRACE_SECONDS)
@@ -256,6 +313,202 @@ class TaterNativeClient:
 
     def _headers(self) -> dict[str, str]:
         return {"X-Tater-Token": self.token} if self.token else {}
+
+    def _wake_verifier_config(self) -> tuple[str, int, int]:
+        settings = dict(getattr(self.state, "native_settings", {}) or {})
+        mode = str(settings.get("wake_verifier_mode") or "off").strip().lower()
+        if mode not in {"off", "observe", "enforce"}:
+            mode = "off"
+        window_ms = _bounded_int(
+            settings.get("wake_verifier_window_ms"),
+            1000,
+            minimum=500,
+            maximum=WAKE_VERIFIER_MAX_WINDOW_MS,
+        )
+        timeout_ms = _bounded_int(
+            settings.get("wake_verifier_timeout_ms"),
+            500,
+            minimum=100,
+            maximum=2000,
+        )
+        return mode, window_ms, timeout_ms
+
+    def handle_audio(self, audio_chunk: bytes, audio_chunk_2: Optional[bytes] = None) -> None:
+        """Retain enhanced microphone audio before forwarding it normally."""
+        frame = bytes(audio_chunk or b"")
+        usable = len(frame) - (len(frame) % 2)
+        if usable:
+            frame = frame[:usable]
+            maximum = (WAKE_VERIFIER_SAMPLE_RATE * WAKE_VERIFIER_MAX_WINDOW_MS * 2) // 1000
+            with self._wake_audio_lock:
+                self._wake_audio.append(frame)
+                self._wake_audio_bytes += len(frame)
+                while self._wake_audio_bytes > maximum and self._wake_audio:
+                    excess = self._wake_audio_bytes - maximum
+                    oldest = self._wake_audio[0]
+                    if len(oldest) <= excess:
+                        self._wake_audio.popleft()
+                        self._wake_audio_bytes -= len(oldest)
+                    else:
+                        trim = excess + (excess % 2)
+                        self._wake_audio[0] = oldest[trim:]
+                        self._wake_audio_bytes -= trim
+        if callable(self._original_handle_audio):
+            self._original_handle_audio(audio_chunk, audio_chunk_2)
+
+    def _wake_audio_snapshot(self, window_ms: int) -> bytes:
+        requested_bytes = (WAKE_VERIFIER_SAMPLE_RATE * int(window_ms) * 2) // 1000
+        minimum_bytes = (WAKE_VERIFIER_SAMPLE_RATE * WAKE_VERIFIER_MIN_CAPTURE_MS * 2) // 1000
+        with self._wake_audio_lock:
+            if self._wake_audio_bytes < minimum_bytes:
+                return b""
+            audio = b"".join(self._wake_audio)
+        return audio[-requested_bytes:]
+
+    def wakeup(self, wake_word: Any) -> None:
+        """Run Tater's second STT check before an enforced local wake."""
+        mode, _window_ms, _timeout_ms = self._wake_verifier_config()
+        loop = self._loop
+        if mode == "off" or not self._connected or loop is None or loop.is_closed():
+            if callable(self._original_wakeup):
+                self._original_wakeup(wake_word)
+            return
+        if mode == "enforce":
+            if self._wake_verifier_gate.is_set():
+                _LOGGER.debug("Ignoring wake while STT wake verification is already pending")
+                return
+            self._wake_verifier_gate.set()
+        loop.call_soon_threadsafe(self._queue_wake_verification, wake_word, mode)
+        if mode == "observe" and callable(self._original_wakeup):
+            self._original_wakeup(wake_word)
+
+    def _next_wake_verifier_id(self) -> int:
+        self._wake_verifier_generation = (self._wake_verifier_generation + 1) & 0xFFFFFFFF
+        if self._wake_verifier_generation == 0:
+            self._wake_verifier_generation = 1
+        return self._wake_verifier_generation
+
+    def _queue_wake_verification(self, wake_word: Any, mode: str) -> None:
+        enforce = mode == "enforce"
+        if not self._connected:
+            self._wake_verifier_gate.clear()
+            if enforce and callable(self._original_wakeup):
+                self._original_wakeup(wake_word)
+            return
+        _current_mode, window_ms, timeout_ms = self._wake_verifier_config()
+        pcm = self._wake_audio_snapshot(window_ms)
+        if not pcm:
+            _LOGGER.warning("STT wake verification skipped because the capture ring is not ready")
+            self._wake_verifier_gate.clear()
+            if enforce and callable(self._original_wakeup):
+                self._original_wakeup(wake_word)
+            return
+
+        request_id = self._next_wake_verifier_id()
+        packet = build_wake_verifier_packet(pcm, request_id=request_id, enforce=enforce)
+        while len(self._wake_verifier_requests) >= WAKE_VERIFIER_MAX_OUTSTANDING:
+            self._wake_verifier_requests.pop(next(iter(self._wake_verifier_requests)))
+        self._wake_verifier_requests[request_id] = enforce
+        self._wake_verifier_last_reason = "pending"
+        if enforce:
+            self._wake_verifier_pending_id = request_id
+            self._wake_verifier_pending_word = wake_word
+
+        if not self._queue_frame(packet):
+            self._complete_wake_verification(
+                request_id,
+                accepted=True,
+                available=False,
+                reason="queue_fail_open",
+            )
+            return
+
+        _LOGGER.info(
+            "STT wake verification queued request=%d mode=%s samples=%d timeout_ms=%d",
+            request_id,
+            mode,
+            len(pcm) // 2,
+            timeout_ms,
+        )
+        if enforce:
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                self._complete_wake_verification(
+                    request_id,
+                    accepted=True,
+                    available=False,
+                    reason="timer_unavailable_fail_open",
+                )
+                return
+            self._wake_verifier_timeout = loop.call_later(
+                timeout_ms / 1000.0,
+                self._wake_verifier_timed_out,
+                request_id,
+            )
+
+    def _wake_verifier_timed_out(self, request_id: int) -> None:
+        self._complete_wake_verification(
+            request_id,
+            accepted=True,
+            available=False,
+            reason="satellite_timeout_fail_open",
+        )
+
+    def _complete_wake_verification(
+        self,
+        request_id: int,
+        *,
+        accepted: bool,
+        available: bool,
+        reason: str,
+    ) -> None:
+        enforce = self._wake_verifier_requests.pop(request_id, None)
+        if enforce is None:
+            return
+        fail_open = not available
+        self._wake_verifier_completed += 1
+        if not accepted and not fail_open:
+            self._wake_verifier_rejections += 1
+        if fail_open:
+            self._wake_verifier_fail_open += 1
+        self._wake_verifier_last_reason = str(reason or ("accepted" if accepted else "rejected"))
+
+        pending_wake = None
+        if enforce and request_id == self._wake_verifier_pending_id:
+            timeout = self._wake_verifier_timeout
+            self._wake_verifier_timeout = None
+            if timeout is not None:
+                timeout.cancel()
+            pending_wake = self._wake_verifier_pending_word
+            self._wake_verifier_pending_id = 0
+            self._wake_verifier_pending_word = None
+            self._wake_verifier_gate.clear()
+
+        _LOGGER.info(
+            "STT wake verification result request=%d accepted=%s available=%s enforced=%s reason=%s",
+            request_id,
+            accepted,
+            available,
+            bool(enforce),
+            self._wake_verifier_last_reason,
+        )
+        if pending_wake is None:
+            return
+        if accepted or fail_open:
+            if callable(self._original_wakeup):
+                self._original_wakeup(pending_wake)
+        else:
+            _LOGGER.info("STT wake verification rejected false wake")
+
+    def _wake_verifier_status(self) -> dict[str, Any]:
+        return {
+            "pending": bool(self._wake_verifier_pending_id),
+            "pending_id": self._wake_verifier_pending_id,
+            "completed": self._wake_verifier_completed,
+            "rejections": self._wake_verifier_rejections,
+            "fail_open": self._wake_verifier_fail_open,
+            "last_reason": self._wake_verifier_last_reason,
+        }
 
     def send_messages(self, msgs: Iterable[message.Message]) -> None:
         messages = list(msgs or [])
@@ -329,23 +582,25 @@ class TaterNativeClient:
             return
         loop.call_soon_threadsafe(self._queue_frame, frame)
 
-    def _queue_frame(self, frame: str | bytes) -> None:
+    def _queue_frame(self, frame: str | bytes) -> bool:
         if not self._connected:
-            return
+            return False
         try:
             self._outgoing.put_nowait(frame)
+            return True
         except asyncio.QueueFull:
             if isinstance(frame, bytes):
                 self._audio_drops += 1
                 if self._audio_drops == 1 or self._audio_drops % 100 == 0:
                     _LOGGER.warning("Tater native audio queue full; dropped %d chunks", self._audio_drops)
-                return
+                return False
             try:
                 self._outgoing.get_nowait()
                 self._outgoing.task_done()
             except asyncio.QueueEmpty:
                 pass
             self._outgoing.put_nowait(frame)
+            return True
 
     def _clear_outgoing(self) -> None:
         while True:
@@ -446,6 +701,14 @@ class TaterNativeClient:
         self._connected = False
         self._voice_start_pending = False
         self._audio_preroll.clear()
+        timeout = self._wake_verifier_timeout
+        self._wake_verifier_timeout = None
+        if timeout is not None:
+            timeout.cancel()
+        self._wake_verifier_requests.clear()
+        self._wake_verifier_pending_id = 0
+        self._wake_verifier_pending_word = None
+        self._wake_verifier_gate.clear()
         self._clear_outgoing()
         if not was_connected:
             return
@@ -497,6 +760,7 @@ class TaterNativeClient:
                         "connected": True,
                         "audio_tx_dropped": self._audio_drops,
                         "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
+                        "wake_engine": {"verifier": self._wake_verifier_status()},
                     },
                 )
             )
@@ -554,6 +818,19 @@ class TaterNativeClient:
                 self._voice_start_pending = False
                 while self._audio_preroll:
                     self._queue_frame(self._audio_preroll.popleft())
+            return
+
+        if message_type == "wake.verify.result":
+            try:
+                request_id = int(payload.get("request_id") or 0)
+            except (TypeError, ValueError):
+                request_id = 0
+            self._complete_wake_verification(
+                request_id,
+                accepted=_truthy(payload.get("accepted")),
+                available=("available" not in payload or _truthy(payload.get("available"))),
+                reason=str(payload.get("reason") or ""),
+            )
             return
 
         if message_type == "media.session.start":

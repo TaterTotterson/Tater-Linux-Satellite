@@ -69,6 +69,9 @@ class LiveSettingsTests(unittest.TestCase):
                     "wake_engine": "micro_wake_word",
                     "wake_word": "hey_tater",
                     "wake_threshold": 0.92,
+                    "wake_verifier_mode": "enforce",
+                    "wake_verifier_window_ms": 1200,
+                    "wake_verifier_timeout_ms": 650,
                     "wake_sound_enabled": True,
                     "wake_sound": "notification-ding",
                     "volume_percent": 63,
@@ -84,6 +87,9 @@ class LiveSettingsTests(unittest.TestCase):
         self.assertEqual(state.active_wake_words, {"hey_tater"})
         self.assertEqual(state.preferences.active_wake_words, ["hey_tater"])
         self.assertEqual(state.wake_word_1_threshold, 0.92)
+        self.assertEqual(applied["wake_verifier_mode"], "enforce")
+        self.assertEqual(applied["wake_verifier_window_ms"], 1200)
+        self.assertEqual(applied["wake_verifier_timeout_ms"], 650)
         self.assertTrue(state.wakeup_sound.endswith("linux_voice_assistant/assets/tater_native/notification-ding.wav"))
         self.assertTrue(Path(state.wakeup_sound).is_file())
         self.assertEqual(state.music_player.volumes, [63])
@@ -130,6 +136,24 @@ class LiveSettingsTests(unittest.TestCase):
         self.assertEqual(applied["led_brightness"], 100)
         self.assertEqual(applied["led_color"], "#ff5a1f")
         self.assertEqual(applied["led_listening_animation"], "directional")
+
+    def test_wake_verifier_settings_match_native_firmware_bounds(self) -> None:
+        with TemporaryDirectory() as temporary:
+            state = _State(Path(temporary))
+            applied = apply_live_settings(
+                state,
+                {
+                    "wake_engine": "button",
+                    "wake_verifier_mode": "invalid",
+                    "wake_verifier_window_ms": 100,
+                    "wake_verifier_timeout_ms": 9000,
+                },
+                notify=False,
+            )
+
+        self.assertEqual(applied["wake_verifier_mode"], "off")
+        self.assertEqual(applied["wake_verifier_window_ms"], 500)
+        self.assertEqual(applied["wake_verifier_timeout_ms"], 2000)
 
 
 class SettingsAcknowledgementTests(unittest.TestCase):

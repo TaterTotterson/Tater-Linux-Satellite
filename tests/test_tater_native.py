@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 import unittest
+from types import SimpleNamespace
 
 import websockets
 from aioesphomeapi.api_pb2 import VoiceAssistantAnnounceFinished, VoiceAssistantAudio, VoiceAssistantRequest
@@ -9,7 +10,17 @@ from aioesphomeapi.model import VoiceAssistantEventType
 
 from linux_voice_assistant.peripheral_api import LVAEvent
 from linux_voice_assistant.satellite import _TtsSegmentCoordinator
-from linux_voice_assistant.tater_native import DEFAULT_TTS_SEGMENT_GRACE_SECONDS, TaterNativeClient, _event_data, _voice_event, _websocket_header_options, normalize_tater_url
+from linux_voice_assistant.tater_native import (
+    DEFAULT_TTS_SEGMENT_GRACE_SECONDS,
+    TaterNativeClient,
+    WAKE_VERIFIER_HEADER,
+    WAKE_VERIFIER_MAGIC,
+    _event_data,
+    _voice_event,
+    _websocket_header_options,
+    build_wake_verifier_packet,
+    normalize_tater_url,
+)
 
 
 def _json(frame: str) -> dict:
@@ -60,6 +71,20 @@ class TaterNativeTests(unittest.TestCase):
         self.assertEqual(frames[0], b"\x01\x02")
         self.assertEqual(_json(frames[1])["type"], "playback.finished")
         self.assertIs(_json(frames[1])["payload"]["ok"], True)
+
+    def test_wake_verifier_packet_matches_tater_native_protocol(self) -> None:
+        pcm = b"\x01\x02" * 8000
+        packet = build_wake_verifier_packet(pcm, request_id=42, enforce=True)
+        magic, version, codec, flags, request_id, sample_rate, sample_count = WAKE_VERIFIER_HEADER.unpack_from(packet)
+
+        self.assertEqual(magic, WAKE_VERIFIER_MAGIC)
+        self.assertEqual(version, 1)
+        self.assertEqual(codec, 1)
+        self.assertEqual(flags, 1)
+        self.assertEqual(request_id, 42)
+        self.assertEqual(sample_rate, 16000)
+        self.assertEqual(sample_count, 8000)
+        self.assertEqual(packet[WAKE_VERIFIER_HEADER.size :], pcm)
 
     def test_event_data_matches_lva_string_conventions(self) -> None:
         self.assertEqual(
@@ -156,6 +181,8 @@ class _FakeState:
     output_only = False
     connected = False
     satellite = None
+    native_settings = {}
+    volume = 1.0
 
 
 class _FakeMusicPlayer:
@@ -199,6 +226,8 @@ class _FakeSatellite:
         self.tts_segment_grace_seconds = 0.0
         self.queued_tts = []
         self.stopped = False
+        self.audio = []
+        self.wakeups = []
 
     def send_messages(self, msgs) -> None:
         del msgs
@@ -223,8 +252,213 @@ class _FakeSatellite:
     def stop(self) -> None:
         self.stopped = True
 
+    def handle_audio(self, audio_chunk, audio_chunk_2=None) -> None:
+        self.audio.append((audio_chunk, audio_chunk_2))
+
+    def wakeup(self, wake_word) -> None:
+        self.wakeups.append(wake_word)
+
 
 class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
+    def _verifier_client(self, mode: str = "enforce"):
+        satellite = _FakeSatellite()
+        satellite.state.native_settings = {
+            "wake_verifier_mode": mode,
+            "wake_verifier_window_ms": 1000,
+            "wake_verifier_timeout_ms": 500,
+        }
+        client = TaterNativeClient(satellite, url="http://tater.local:8501")
+        client._loop = asyncio.get_running_loop()
+        client._connected = True
+        satellite.handle_audio(b"\x11\x22" * 16000)
+        return satellite, client
+
+    async def test_enforced_wake_waits_for_second_stt_acceptance(self) -> None:
+        satellite, client = self._verifier_client()
+        wake_word = SimpleNamespace(wake_word="Hey Tater")
+
+        satellite.wakeup(wake_word)
+        await asyncio.sleep(0)
+
+        self.assertEqual(satellite.wakeups, [])
+        packet = client._outgoing.get_nowait()
+        header = WAKE_VERIFIER_HEADER.unpack_from(packet)
+        request_id = header[4]
+        self.assertEqual(header[3], 1)
+        self.assertEqual(header[6], 16000)
+        client._handle_message(
+            {
+                "type": "wake.verify.result",
+                "payload": {
+                    "request_id": request_id,
+                    "accepted": True,
+                    "available": True,
+                    "reason": "matched",
+                },
+            }
+        )
+
+        self.assertEqual(satellite.wakeups, [wake_word])
+        self.assertEqual(client._wake_verifier_status()["completed"], 1)
+        self.assertEqual(client._wake_verifier_status()["last_reason"], "matched")
+
+    async def test_enforced_wake_rejects_mismatch_without_starting_pipeline(self) -> None:
+        satellite, client = self._verifier_client()
+        wake_word = SimpleNamespace(wake_word="Hey Tater")
+
+        satellite.wakeup(wake_word)
+        await asyncio.sleep(0)
+        packet = client._outgoing.get_nowait()
+        request_id = WAKE_VERIFIER_HEADER.unpack_from(packet)[4]
+        client._handle_message(
+            {
+                "type": "wake.verify.result",
+                "payload": {
+                    "request_id": request_id,
+                    "accepted": False,
+                    "available": True,
+                    "reason": "transcript_mismatch",
+                },
+            }
+        )
+
+        self.assertEqual(satellite.wakeups, [])
+        self.assertEqual(client._wake_verifier_status()["rejections"], 1)
+        self.assertFalse(client._wake_verifier_gate.is_set())
+
+    async def test_enforced_wake_fails_open_on_satellite_timeout(self) -> None:
+        satellite, client = self._verifier_client()
+        wake_word = SimpleNamespace(wake_word="Hey Tater")
+
+        satellite.wakeup(wake_word)
+        await asyncio.sleep(0)
+        packet = client._outgoing.get_nowait()
+        request_id = WAKE_VERIFIER_HEADER.unpack_from(packet)[4]
+        client._wake_verifier_timed_out(request_id)
+
+        self.assertEqual(satellite.wakeups, [wake_word])
+        self.assertEqual(client._wake_verifier_status()["fail_open"], 1)
+        self.assertEqual(client._wake_verifier_status()["last_reason"], "satellite_timeout_fail_open")
+
+    async def test_observe_mode_checks_wake_without_delaying_it(self) -> None:
+        satellite, client = self._verifier_client(mode="observe")
+        wake_word = SimpleNamespace(wake_word="Hey Tater")
+
+        satellite.wakeup(wake_word)
+        await asyncio.sleep(0)
+
+        self.assertEqual(satellite.wakeups, [wake_word])
+        packet = client._outgoing.get_nowait()
+        self.assertEqual(WAKE_VERIFIER_HEADER.unpack_from(packet)[3], 0)
+
+    async def test_websocket_acceptance_starts_voice_only_after_verifier_result(self) -> None:
+        received = []
+        got_start = asyncio.Event()
+
+        async def handler(websocket) -> None:
+            hello = json.loads(await websocket.recv())
+            await websocket.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "hello.ack",
+                        "id": hello["id"],
+                        "ts": 1,
+                        "payload": {"ok": True, "selector": "native:sat1"},
+                    }
+                )
+            )
+            packet = await websocket.recv()
+            received.append(packet)
+            request_id = WAKE_VERIFIER_HEADER.unpack_from(packet)[4]
+            await websocket.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "wake.verify.result",
+                        "id": "verify-result",
+                        "ts": 2,
+                        "payload": {
+                            "request_id": request_id,
+                            "accepted": True,
+                            "available": True,
+                            "reason": "matched",
+                        },
+                    }
+                )
+            )
+            start = json.loads(await websocket.recv())
+            received.append(start)
+            got_start.set()
+            await websocket.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "voice.start.ack",
+                        "id": start["id"],
+                        "ts": 3,
+                        "payload": {"ok": True},
+                    }
+                )
+            )
+            await websocket.wait_closed()
+
+        class StartingSatellite(_FakeSatellite):
+            def wakeup(self, wake_word) -> None:
+                super().wakeup(wake_word)
+                self._pipeline_active = True
+                self.send_messages([VoiceAssistantRequest(start=True, wake_word_phrase=wake_word.wake_word)])
+
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            satellite = StartingSatellite()
+            satellite.state.native_settings = {
+                "wake_verifier_mode": "enforce",
+                "wake_verifier_window_ms": 1000,
+                "wake_verifier_timeout_ms": 500,
+            }
+            client = TaterNativeClient(
+                satellite,
+                url=f"http://127.0.0.1:{port}",
+                device_id="sat1",
+                board="sat1-rpi",
+                heartbeat_seconds=30,
+            )
+            task = asyncio.create_task(client.run_forever())
+            for _ in range(100):
+                if client.connected:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(client.connected)
+            satellite.handle_audio(b"\x11\x22" * 16000)
+            satellite.wakeup(SimpleNamespace(wake_word="Hey Tater"))
+            await asyncio.wait_for(got_start.wait(), timeout=2)
+            await client.close()
+            await asyncio.wait_for(task, timeout=2)
+
+        self.assertIsInstance(received[0], bytes)
+        self.assertEqual(received[1]["type"], "voice.start")
+        self.assertEqual(received[1]["payload"]["wake_word"], "Hey Tater")
+
+    async def test_short_capture_fails_open_without_sending_verifier_packet(self) -> None:
+        satellite = _FakeSatellite()
+        satellite.state.native_settings = {
+            "wake_verifier_mode": "enforce",
+            "wake_verifier_window_ms": 1000,
+            "wake_verifier_timeout_ms": 500,
+        }
+        client = TaterNativeClient(satellite, url="http://tater.local:8501")
+        client._loop = asyncio.get_running_loop()
+        client._connected = True
+        satellite.handle_audio(b"\x11\x22" * 4000)
+        wake_word = SimpleNamespace(wake_word="Hey Tater")
+
+        satellite.wakeup(wake_word)
+        await asyncio.sleep(0)
+
+        self.assertEqual(satellite.wakeups, [wake_word])
+        self.assertTrue(client._outgoing.empty())
+
     async def test_native_persistent_media_session_controls_music_player(self) -> None:
         satellite = _FakeSatellite()
         client = TaterNativeClient(
@@ -263,15 +497,9 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
                 "payload": {"session_id": "music-1", "volume_percent": 35},
             }
         )
-        client._handle_message(
-            {"type": "media.session.pause", "payload": {"session_id": "music-1"}}
-        )
-        client._handle_message(
-            {"type": "media.session.resume", "payload": {"session_id": "music-1"}}
-        )
-        client._handle_message(
-            {"type": "media.session.stop", "payload": {"session_id": "music-1"}}
-        )
+        client._handle_message({"type": "media.session.pause", "payload": {"session_id": "music-1"}})
+        client._handle_message({"type": "media.session.resume", "payload": {"session_id": "music-1"}})
+        client._handle_message({"type": "media.session.stop", "payload": {"session_id": "music-1"}})
 
         self.assertTrue(client.capabilities["persistent_media_sessions"])
         self.assertEqual(client.capabilities["audio_session_version"], 1)
@@ -404,6 +632,7 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received[0]["type"], "hello")
         self.assertTrue(received[0]["payload"]["capabilities"]["motion"])
         self.assertTrue(received[0]["payload"]["capabilities"]["persistent_media_sessions"])
+        self.assertTrue(received[0]["payload"]["capabilities"]["wake_verifier"])
         self.assertEqual(received[1]["type"], "voice.start")
         self.assertEqual(received[1]["payload"]["wake_word"], "hey reachy")
         self.assertEqual(received[2], b"\x01\x02")

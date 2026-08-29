@@ -33,6 +33,8 @@ word, and optional peripherals.
 - Local
   [microWakeWord](https://github.com/kahrendt/microWakeWord) and
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection
+- Optional second-STT wake verification with Observe, Enabled, and fail-open
+  behavior matching Tater Native firmware
 - Custom wake-word support through
   [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words)
 - Live Tater Voice settings for wake word, wake sound, output volume, and
@@ -97,6 +99,12 @@ Changes made later in Tater are applied without restarting the satellite and
 are cached for the next boot. The bundled Hey Tater model and wake sounds work
 offline; catalog/custom wake words and custom sounds are downloaded once and
 then reused from the satellite's download directory.
+
+When STT Wake Verification is enabled in Tater, the satellite keeps a short
+rolling microphone window and asks Tater to confirm the detected phrase before
+playing the wake sound or opening the conversation. Observe mode records the
+same checks without delaying or rejecting wakes. Verification errors and
+timeouts fail open so an unavailable STT service cannot disable the satellite.
 
 ## Audio And Wake Words
 

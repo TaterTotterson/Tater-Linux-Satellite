@@ -76,6 +76,11 @@ _LED_DEFAULTS = {
     "led_replying_animation": "voice_ring",
 }
 
+_WAKE_VERIFIER_DEFAULT_MODE = "off"
+_WAKE_VERIFIER_DEFAULT_WINDOW_MS = 1000
+_WAKE_VERIFIER_DEFAULT_TIMEOUT_MS = 500
+_WAKE_VERIFIER_MODES = {"off", "observe", "enforce"}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -240,9 +245,7 @@ def _prepare_wake_sound(state: Any, settings: dict[str, Any], *, allow_download:
 
 
 def _normalize_led_settings(settings: dict[str, Any]) -> None:
-    settings["led_brightness"] = _bounded_int(
-        settings.get("led_brightness"), int(_LED_DEFAULTS["led_brightness"]), 0, 100
-    )
+    settings["led_brightness"] = _bounded_int(settings.get("led_brightness"), int(_LED_DEFAULTS["led_brightness"]), 0, 100)
     color = _text(settings.get("led_color") or _LED_DEFAULTS["led_color"]).lower()
     color = color.removeprefix("#")
     if len(color) == 3 and all(character in "0123456789abcdef" for character in color):
@@ -260,6 +263,23 @@ def _normalize_led_settings(settings: dict[str, Any]) -> None:
         settings[key] = animation if animation in _LED_ANIMATIONS else _LED_DEFAULTS[key]
 
 
+def _normalize_wake_verifier_settings(settings: dict[str, Any]) -> None:
+    mode = _text(settings.get("wake_verifier_mode") or _WAKE_VERIFIER_DEFAULT_MODE).lower()
+    settings["wake_verifier_mode"] = mode if mode in _WAKE_VERIFIER_MODES else "off"
+    settings["wake_verifier_window_ms"] = _bounded_int(
+        settings.get("wake_verifier_window_ms"),
+        _WAKE_VERIFIER_DEFAULT_WINDOW_MS,
+        500,
+        2000,
+    )
+    settings["wake_verifier_timeout_ms"] = _bounded_int(
+        settings.get("wake_verifier_timeout_ms"),
+        _WAKE_VERIFIER_DEFAULT_TIMEOUT_MS,
+        100,
+        2000,
+    )
+
+
 def apply_live_settings(
     state: Any,
     payload: dict[str, Any],
@@ -271,6 +291,7 @@ def apply_live_settings(
     """Validate, apply, persist, and publish one complete Tater settings snapshot."""
     settings = dict(payload or {})
     _normalize_led_settings(settings)
+    _normalize_wake_verifier_settings(settings)
     wake_engine, wake_word_id, available, wake_model = _prepare_wake_word(
         state,
         settings,
@@ -314,9 +335,12 @@ def apply_live_settings(
         state.peripheral_api.emit_event_sync(LVAEvent.SETTINGS, {"settings": settings})
 
     _LOGGER.info(
-        "Tater settings applied wake_engine=%s wake_word=%s wake_sound=%s volume=%d led=%s/%d",
+        "Tater settings applied wake_engine=%s wake_word=%s wake_verifier=%s/%dms/%dms wake_sound=%s volume=%d led=%s/%d",
         wake_engine,
         wake_word_id or "off",
+        settings["wake_verifier_mode"],
+        settings["wake_verifier_window_ms"],
+        settings["wake_verifier_timeout_ms"],
         wakeup_sound or "off",
         volume_percent,
         settings["led_color"],
