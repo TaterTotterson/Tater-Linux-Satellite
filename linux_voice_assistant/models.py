@@ -151,6 +151,10 @@ class ServerState:
     # Assigned in __main__ before the event loop starts.
     peripheral_api: "Optional[Any]" = None  # PeripheralAPIServer at runtime
 
+    # Optional Tater-native callback used to report physical volume changes
+    # back to the server so its settings slider stays in sync.
+    native_settings_reporter: "Optional[Any]" = None
+
     sensitivity_1_number_entity: "Optional[WakeWord1SensitivityNumberEntity]" = None
     sensitivity_2_number_entity: "Optional[WakeWord2SensitivityNumberEntity]" = None
     stop_sensitivity_number_entity: "Optional[StopWordSensitivityNumberEntity]" = None
@@ -220,6 +224,9 @@ class ServerState:
 
         self.volume = clamped_volume
         self.preferences.volume = clamped_volume
+        volume_percent = int(round(clamped_volume * 100))
+        self.native_settings["volume_percent"] = volume_percent
+        self.preferences.native_settings["volume_percent"] = volume_percent
         _LOGGER.info("Saving volume %s to %s", clamped_volume, self.preferences_path)
         self.save_preferences()
         _LOGGER.info("Volume saved successfully")
@@ -230,6 +237,10 @@ class ServerState:
             from .peripheral_api import LVAEvent  # local import avoids circular dep
 
             api.emit_event_sync(LVAEvent.VOLUME_CHANGED, {"volume": round(clamped_volume, 3)})
+
+        reporter = self.native_settings_reporter
+        if callable(reporter):
+            reporter({"volume_percent": volume_percent})
 
     def persist_mic_gain(self, gain: float) -> None:
         """Persist the microphone auto gain value."""

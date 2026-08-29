@@ -530,6 +530,7 @@ async def main() -> None:
                 firmware_version=state.version,
                 reconnect_seconds=args.tater_reconnect_seconds,
             )
+            state.native_settings_reporter = native_client.report_settings
         except Exception:
             _LOGGER.critical("Fatal error initializing Tater native satellite transport", exc_info=True)
             sys.exit(1)
