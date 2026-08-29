@@ -208,17 +208,6 @@ class TaterNativeClient:
     def connected(self) -> bool:
         return self._connected
 
-    def report_settings(self, settings: dict[str, Any]) -> None:
-        """Report a local hardware setting change to the paired Tater."""
-        if not isinstance(settings, dict) or not settings:
-            return
-        self._submit_frame(
-            _json_frame(
-                "settings.changed",
-                {"ok": True, "settings": dict(settings)},
-            )
-        )
-
     def _load_saved_token(self) -> str:
         if self.token_file is None:
             return ""
@@ -496,7 +485,6 @@ class TaterNativeClient:
                         "uptime_s": int(time.monotonic() - self._started_monotonic),
                         "connected": True,
                         "audio_tx_dropped": self._audio_drops,
-                        "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
                     },
                 )
             )
@@ -528,19 +516,6 @@ class TaterNativeClient:
                 self.satellite.handle_voice_event(event_type, data)
             else:
                 _LOGGER.debug("Ignoring unsupported Tater voice event: %s", payload.get("event"))
-            return
-
-        if message_type == "state":
-            # Tater sends these visual states immediately. In particular,
-            # ``thinking`` arrives at VAD end, before remote STT/LLM/TTS work;
-            # waiting for INTENT_START can make the animation visible for only
-            # a fraction of a second. Keep playback-driven speaking events in
-            # the existing TTS player path so the reply ring starts with sound.
-            visual_state = str(payload.get("state") or "").strip().lower()
-            if visual_state == "thinking":
-                self.satellite._emit(LVAEvent.THINKING, None)  # pylint: disable=protected-access
-            elif visual_state == "tool_call":
-                self.satellite._emit(LVAEvent.TOOL_CALL, payload)  # pylint: disable=protected-access
             return
 
         if message_type == "voice.start.ack":
