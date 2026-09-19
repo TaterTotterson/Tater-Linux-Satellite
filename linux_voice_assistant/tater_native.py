@@ -35,6 +35,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 from aioesphomeapi.model import VoiceAssistantEventType
 from google.protobuf import message
 
+from .ble_scanner import LinuxBleScanner
 from .native_timers import NativeTimerManager
 from .peripheral_api import LVAEvent
 
@@ -218,6 +219,8 @@ class TaterNativeClient:
             "audio_session_version": 1,
             "settings": True,
             "wake_verifier": True,
+            "ble_advertisements": True,
+            "ble_advertisements_version": 1,
         }
         if capabilities:
             self.capabilities.update({str(key): value if isinstance(value, (bool, int, float, str)) else bool(value) for key, value in capabilities.items()})
@@ -250,6 +253,11 @@ class TaterNativeClient:
             satellite,
             lambda message_type, payload: self._submit_frame(_json_frame(message_type, payload)),
         )
+        self._ble_scanner = LinuxBleScanner(
+            lambda payload: self._submit_frame(_json_frame("ble.advertisements", payload)),
+            device_id=0,
+            should_pause=self._ble_should_pause,
+        )
 
         # VoiceSatelliteProtocol already owns the complete local state machine.
         # Replacing only its serializer preserves subclasses such as Reachy's
@@ -280,6 +288,25 @@ class TaterNativeClient:
                 {"ok": True, "settings": dict(settings)},
             )
         )
+
+    def _ble_should_pause(self) -> bool:
+        """Protect voice, playback, and media latency from BLE scan work."""
+        if self._voice_start_pending:
+            return True
+        if bool(getattr(self.satellite, "_is_streaming_audio", False)):
+            return True
+        if bool(getattr(self.satellite, "_pipeline_active", False)):
+            return True
+        if self._media_session_id:
+            return True
+        for player_name in ("tts_player", "music_player"):
+            player = getattr(self.state, player_name, None)
+            try:
+                if bool(getattr(player, "is_playing", False)):
+                    return True
+            except Exception:  # pylint: disable=broad-except
+                return True
+        return False
 
     def _load_saved_token(self) -> str:
         if self.token_file is None:
@@ -672,21 +699,25 @@ class TaterNativeClient:
             self._save_token(paired_token)
 
         self._mark_connected(first_payload)
-        reader = asyncio.create_task(self._reader(websocket))
-        writer = asyncio.create_task(self._writer(websocket))
-        heartbeat = asyncio.create_task(self._heartbeat())
-        stop_wait = asyncio.create_task(self._stop.wait()) if self._stop is not None else None
-        tasks: set[asyncio.Task[Any]] = {reader, writer, heartbeat}
-        if stop_wait is not None:
-            tasks.add(stop_wait)
+        await self._ble_scanner.start()
+        try:
+            reader = asyncio.create_task(self._reader(websocket))
+            writer = asyncio.create_task(self._writer(websocket))
+            heartbeat = asyncio.create_task(self._heartbeat())
+            stop_wait = asyncio.create_task(self._stop.wait()) if self._stop is not None else None
+            tasks: set[asyncio.Task[Any]] = {reader, writer, heartbeat}
+            if stop_wait is not None:
+                tasks.add(stop_wait)
 
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            if task is not stop_wait:
-                task.result()
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                if task is not stop_wait:
+                    task.result()
+        finally:
+            await self._ble_scanner.stop()
 
     def _mark_connected(self, ack_payload: dict[str, Any]) -> None:
         self._connected = True
@@ -765,6 +796,7 @@ class TaterNativeClient:
                 "audio_tx_dropped": self._audio_drops,
                 "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
                 "wake_engine": {"verifier": self._wake_verifier_status()},
+                "ble_observer": self._ble_scanner.status(),
             }
             status_payload.update(self._native_timers.status())
             self._queue_frame(
@@ -1079,6 +1111,7 @@ class TaterNativeClient:
         self._submit_frame(_json_frame(message_type, event_payload))
 
     async def close(self) -> None:
+        await self._ble_scanner.stop()
         await self._native_timers.close()
         stop = self._stop
         if stop is not None:

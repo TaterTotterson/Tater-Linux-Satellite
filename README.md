@@ -37,6 +37,8 @@ word, and optional peripherals.
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection
 - Optional second-STT wake verification with Observe, Enabled, and fail-open
   behavior matching Tater Native firmware
+- Always-on, bounded BLE advertisement observation for Tater room presence,
+  with automatic pauses during voice, playback, and media sessions
 - Custom wake-word support through
   [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words)
 - Live Tater Voice settings for wake word, wake sound, output volume, and
@@ -107,6 +109,13 @@ rolling microphone window and asks Tater to confirm the detected phrase before
 playing the wake sound or opening the conversation. Observe mode records the
 same checks without delaying or rejecting wakes. Verification errors and
 timeouts fail open so an unavailable STT service cannot disable the satellite.
+
+On supported Linux satellites, native mode also observes nearby BLE
+advertisements and sends fixed-size batches to Tater for room presence. The
+observer never connects to or pairs with nearby devices. It uses raw HCI when
+the service has the required capabilities, otherwise it uses BlueZ through the
+optional Bleak package. If no Bluetooth adapter is available, voice service
+continues normally and the heartbeat reports the observer as unavailable.
 
 ## Audio And Wake Words
 

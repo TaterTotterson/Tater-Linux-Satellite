@@ -523,6 +523,32 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(events[1]["payload"]["ok"])
 
+    async def test_ble_observer_capability_and_latency_pauses(self) -> None:
+        satellite = _FakeSatellite()
+        client = TaterNativeClient(
+            satellite,
+            url="http://tater.local:8501",
+        )
+
+        self.assertTrue(client.capabilities["ble_advertisements"])
+        self.assertEqual(client.capabilities["ble_advertisements_version"], 1)
+        self.assertFalse(client._ble_should_pause())
+
+        client._voice_start_pending = True
+        self.assertTrue(client._ble_should_pause())
+        client._voice_start_pending = False
+
+        satellite._is_streaming_audio = True
+        self.assertTrue(client._ble_should_pause())
+        satellite._is_streaming_audio = False
+
+        satellite.state.music_player.is_playing = True
+        self.assertTrue(client._ble_should_pause())
+        satellite.state.music_player.is_playing = False
+
+        client._media_session_id = "music-1"
+        self.assertTrue(client._ble_should_pause())
+
     async def test_native_playback_uses_segment_queue_and_protocol_stop(self) -> None:
         satellite = _FakeSatellite()
         client = TaterNativeClient(
@@ -633,6 +659,8 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(received[0]["payload"]["capabilities"]["motion"])
         self.assertTrue(received[0]["payload"]["capabilities"]["persistent_media_sessions"])
         self.assertTrue(received[0]["payload"]["capabilities"]["wake_verifier"])
+        self.assertTrue(received[0]["payload"]["capabilities"]["ble_advertisements"])
+        self.assertEqual(received[0]["payload"]["capabilities"]["ble_advertisements_version"], 1)
         self.assertEqual(received[1]["type"], "voice.start")
         self.assertEqual(received[1]["payload"]["wake_word"], "hey reachy")
         self.assertEqual(received[2], b"\x01\x02")
