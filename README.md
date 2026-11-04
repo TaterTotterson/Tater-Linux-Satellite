@@ -193,3 +193,7 @@ This fork builds on the Linux audio and wake-word foundation from
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE.md).
+
+## Trademarks
+
+The Tater name and logo are governed by the [Tater Trademark Policy](TRADEMARKS.md).
