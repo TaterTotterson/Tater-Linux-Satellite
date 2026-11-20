@@ -35,7 +35,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 from aioesphomeapi.model import VoiceAssistantEventType
 from google.protobuf import message
 
-from .ble_scanner import LinuxBleScanner
+from .bluetooth_proxy import BluetoothProxy
 from .native_timers import NativeTimerManager
 from .peripheral_api import LVAEvent
 from .satellite_identity import identity_text as _identity_text, save_identity as _save_identity
@@ -266,11 +266,11 @@ class TaterNativeClient:
             satellite,
             lambda message_type, payload: self._submit_frame(_json_frame(message_type, payload)),
         )
-        self._ble_scanner = LinuxBleScanner(
-            lambda payload: self._submit_frame(_json_frame("ble.advertisements", payload)),
-            device_id=0,
+        self._bluetooth = BluetoothProxy(
+            lambda kind, payload: self._submit_frame(_json_frame(kind, payload)),
             should_pause=self._ble_should_pause,
         )
+        self.capabilities.update(self._bluetooth.capabilities())
 
         # VoiceSatelliteProtocol already owns the complete local state machine.
         # Replacing only its serializer preserves subclasses such as Reachy's
@@ -712,7 +712,6 @@ class TaterNativeClient:
             self._save_token(paired_token)
 
         self._mark_connected(first_payload)
-        await self._ble_scanner.start()
         try:
             reader = asyncio.create_task(self._reader(websocket))
             writer = asyncio.create_task(self._writer(websocket))
@@ -730,7 +729,7 @@ class TaterNativeClient:
                 if task is not stop_wait:
                     task.result()
         finally:
-            await self._ble_scanner.stop()
+            await self._bluetooth.close()
 
     def _mark_connected(self, ack_payload: dict[str, Any]) -> None:
         self._connected = True
@@ -809,7 +808,7 @@ class TaterNativeClient:
                 "audio_tx_dropped": self._audio_drops,
                 "volume_percent": int(round(max(0.0, min(1.0, float(self.state.volume))) * 100)),
                 "wake_engine": {"verifier": self._wake_verifier_status()},
-                "ble_observer": self._ble_scanner.status(),
+                "bluetooth": self._bluetooth.status(),
             }
             status_payload.update(self._native_timers.status())
             self._queue_frame(
@@ -823,6 +822,9 @@ class TaterNativeClient:
         message_type = str(body.get("type") or "").strip()
         raw_payload = body.get("payload")
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+
+        if self._bluetooth.handle_message(body):
+            return
 
         if self._native_timers.handle_message(body):
             return
@@ -1139,7 +1141,7 @@ class TaterNativeClient:
         self._submit_frame(_json_frame(message_type, event_payload))
 
     async def close(self) -> None:
-        await self._ble_scanner.stop()
+        await self._bluetooth.close()
         await self._native_timers.close()
         stop = self._stop
         if stop is not None:

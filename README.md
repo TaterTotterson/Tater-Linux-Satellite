@@ -37,8 +37,8 @@ word, and optional peripherals.
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection
 - Optional second-STT wake verification with Observe, Enabled, and fail-open
   behavior matching Tater Native firmware
-- Always-on, bounded BLE advertisement observation for Tater room presence,
-  with automatic pauses during voice, playback, and media sessions
+- On-demand BLE discovery and an Echo-compatible GATT proxy, with secure PIN
+  pairing and automatic discovery pauses during voice, playback, and media
 - Custom wake-word support through
   [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words)
 - Live Tater Voice settings for wake word, wake sound, output volume, and
@@ -117,12 +117,21 @@ playing the wake sound or opening the conversation. Observe mode records the
 same checks without delaying or rejecting wakes. Verification errors and
 timeouts fail open so an unavailable STT service cannot disable the satellite.
 
-On supported Linux satellites, native mode also observes nearby BLE
-advertisements and sends fixed-size batches to Tater for room presence. The
-observer never connects to or pairs with nearby devices. It uses raw HCI when
-the service has the required capabilities, otherwise it uses BlueZ through the
-optional Bleak package. If no Bluetooth adapter is available, voice service
-continues normally and the heartbeat reports the observer as unavailable.
+On supported Linux satellites, Bluetooth stays off when unused. An explicit
+**Scan for devices** in Tater or the HA bridge starts a bounded discovery window;
+opening the Bluetooth page does not scan. Discovery pauses during voice activity
+and stops automatically. Up to two active GATT connections can remain open for
+devices such as Meshtastic, and keep the radio enabled until disconnected.
+Saved bonds alone do not start Bluetooth. Broadcast-only sensors are not
+monitored continuously, and Bluetooth speaker audio is outside this proxy.
+
+The proxy requires BlueZ (`bluetoothd`), a system D-Bus connection, a BLE adapter,
+and the Linux Bleak dependency installed with this project. The service user
+must have permission to manage that adapter. It owns the adapter's power state;
+use a dedicated adapter if the host also uses Bluetooth for unrelated devices.
+Missing hardware or permission errors leave voice service running. Bonds stay
+in BlueZ; authenticated bond markers (never PINs) use
+`~/.local/share/tater/bluetooth_bonds.json`, overridable with `TATER_BLE_BONDS_PATH`.
 
 ## Audio And Wake Words
 

@@ -563,7 +563,8 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
             url="http://tater.local:8501",
         )
 
-        self.assertTrue(client.capabilities["ble_advertisements"])
+        self.assertEqual(client.capabilities["ble_advertisements"], client._bluetooth.supported)
+        self.assertFalse(client._bluetooth.powered)
         self.assertEqual(client.capabilities["ble_advertisements_version"], 1)
         self.assertFalse(client._ble_should_pause())
 
@@ -692,7 +693,7 @@ class TaterNativeConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(received[0]["payload"]["capabilities"]["motion"])
         self.assertTrue(received[0]["payload"]["capabilities"]["persistent_media_sessions"])
         self.assertTrue(received[0]["payload"]["capabilities"]["wake_verifier"])
-        self.assertTrue(received[0]["payload"]["capabilities"]["ble_advertisements"])
+        self.assertEqual(received[0]["payload"]["capabilities"]["ble_advertisements"], client._bluetooth.supported)
         self.assertEqual(received[0]["payload"]["capabilities"]["ble_advertisements_version"], 1)
         self.assertEqual(received[1]["type"], "voice.start")
         self.assertEqual(received[1]["payload"]["wake_word"], "hey reachy")

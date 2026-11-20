@@ -1,3 +1,23 @@
+<a id="v1.1.13-tater4"></a>
+# v1.1.13-tater4 - 2026-11-19
+
+- Replace background room presence scanning with explicit, bounded discovery
+  and an Echo-compatible GATT proxy. Reading status or opening settings never
+  starts a scan; idle Bluetooth powers down after discovery and links end.
+- Support two active GATT connections, service discovery, reads, writes,
+  notifications, and authenticated six-digit PIN pairing through BlueZ/Bleak.
+- Pause discovery during voice and media activity while preserving active links.
+  Bound pending requests, connection capacity, and per-device operation ordering;
+  clean up interrupted startup, failed scan shutdown, and controller disconnects.
+- Preserve saved bonds and store authenticated markers with owner-only permissions.
+  Never retain pairing PINs. Forward decoded names, service UUIDs, manufacturer
+  data, and service data for Home Assistant discovery.
+- Requires BlueZ, a BLE adapter, and system D-Bus permissions. Use Tater 3.0.5 or
+  Home Assistant bridge 1.4.19 for explicit scans, and Meshtastic Core 0.3.6 for
+  radio discovery. Broadcast-only sensors are not monitored continuously;
+  Bluetooth speaker audio is outside the proxy. Physical device testing remains
+  pending.
+
 <a id="v1.1.13-tater3"></a>
 # v1.1.13-tater3 - 2026-11-19
 
