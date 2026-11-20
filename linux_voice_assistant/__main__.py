@@ -206,6 +206,11 @@ async def main() -> None:
         help="Board identifier reported to Tater (for example: linux or reachy_mini)",
     )
     parser.add_argument(
+        "--tater-identity-file",
+        default="",
+        help="Persistent name/room JSON (default: tater-identity.json beside preferences)",
+    )
+    parser.add_argument(
         "--tater-room",
         default="",
         help="Room reported to Tater",
@@ -527,6 +532,7 @@ async def main() -> None:
                 device_name=state.friendly_name,
                 board=args.tater_board,
                 room=args.tater_room,
+                identity_file=args.tater_identity_file or preferences_path.with_name("tater-identity.json"),
                 firmware_version=state.version,
                 reconnect_seconds=args.tater_reconnect_seconds,
             )

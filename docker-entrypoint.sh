@@ -55,6 +55,9 @@ fi
 if [ -n "${TATER_ROOM}" ]; then
   EXTRA_ARGS+=( "--tater-room" "$TATER_ROOM" )
 fi
+if [ -n "${TATER_IDENTITY_FILE}" ]; then
+  EXTRA_ARGS+=( "--tater-identity-file" "$TATER_IDENTITY_FILE" )
+fi
 
 if [ -n "${TATER_RECONNECT_SECONDS}" ]; then
   EXTRA_ARGS+=( "--tater-reconnect-seconds" "$TATER_RECONNECT_SECONDS" )

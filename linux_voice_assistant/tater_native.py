@@ -38,6 +38,7 @@ from google.protobuf import message
 from .ble_scanner import LinuxBleScanner
 from .native_timers import NativeTimerManager
 from .peripheral_api import LVAEvent
+from .satellite_identity import identity_text as _identity_text, save_identity as _save_identity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -185,6 +186,7 @@ class TaterNativeClient:
         device_name: str = "",
         board: str = "linux",
         room: str = "",
+        identity_file: str | Path | None = None,
         firmware_version: str = "",
         reconnect_seconds: float = DEFAULT_RECONNECT_SECONDS,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
@@ -202,6 +204,16 @@ class TaterNativeClient:
         self.device_name = str(device_name or getattr(self.state, "friendly_name", "") or self.device_id).strip()
         self.board = str(board or "linux").strip()
         self.room = str(room or "").strip()
+        self.identity_file = Path(identity_file).expanduser() if identity_file else None
+        if self.identity_file and self.identity_file.exists():
+            try:
+                saved = json.loads(self.identity_file.read_text(encoding="utf-8"))
+                saved_name = _identity_text(saved.get("name", saved.get("device_name")), required=True)
+                saved_room = _identity_text(saved.get("room"), required=False)
+                self.device_name, self.room = saved_name, saved_room
+            except (OSError, ValueError, TypeError, AttributeError):
+                _LOGGER.warning("Could not restore satellite name and room", exc_info=True)
+        self.state.friendly_name = self.device_name
         self.firmware_version = str(firmware_version or getattr(self.state, "version", "") or "unknown").strip()
         self.reconnect_seconds = max(0.25, float(reconnect_seconds or DEFAULT_RECONNECT_SECONDS))
         self.heartbeat_seconds = max(1.0, float(heartbeat_seconds or DEFAULT_HEARTBEAT_SECONDS))
@@ -224,6 +236,7 @@ class TaterNativeClient:
         }
         if capabilities:
             self.capabilities.update({str(key): value if isinstance(value, (bool, int, float, str)) else bool(value) for key, value in capabilities.items()})
+        self.capabilities["identity_update"] = self.identity_file is not None
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
@@ -812,6 +825,21 @@ class TaterNativeClient:
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
 
         if self._native_timers.handle_message(body):
+            return
+
+        if message_type == "identity.set":
+            result = {"reply_to": str(body.get("id") or ""), "ok": False}
+            try:
+                name = _identity_text(payload.get("device_name"), required=True)
+                room = _identity_text(payload.get("room"), required=False)
+                _save_identity(self.identity_file, name, room)
+                self.device_name, self.room = name, room
+                self.state.friendly_name = name
+                result["ok"] = True
+            except (OSError, ValueError, TypeError) as exc:
+                result["error"] = str(exc)
+            result.update(device_name=self.device_name, room=self.room)
+            self._submit_frame(_json_frame("identity.result", result))
             return
 
         if message_type == "settings":

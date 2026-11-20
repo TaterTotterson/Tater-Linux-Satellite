@@ -1,3 +1,11 @@
+<a id="v1.1.13-tater3"></a>
+# v1.1.13-tater3 - 2026-11-19
+
+- Add confirmed live satellite name and room updates through the authenticated
+  native transport. Persist both fields atomically, restore them at startup,
+  and preserve pairing, stable device IDs, and unrelated configuration.
+- Add `--tater-identity-file` for device integrations such as ThirdReality.
+
 <a id="v1.1.13-tater2"></a>
 # v1.1.13-tater2 - 2026-08-12
 

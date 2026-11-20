@@ -1,6 +1,9 @@
 import asyncio
 import json
 import threading
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 import unittest
 from types import SimpleNamespace
 
@@ -28,6 +31,36 @@ def _json(frame: str) -> dict:
 
 
 class TaterNativeTests(unittest.TestCase):
+    def test_invalid_saved_identity_keeps_both_startup_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "identity.json"
+            path.write_text('{"name":"Kitchen","room":42}')
+            with self.assertLogs("linux_voice_assistant.tater_native", level="WARNING"):
+                client = TaterNativeClient(_FakeSatellite(), url="http://ha.test", device_name="Office", room="Office", identity_file=path)
+            self.assertEqual((client.device_name, client.room), ("Office", "Office"))
+
+    def test_live_identity_changes_and_restores_without_changing_device_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tater.json"
+            path.write_text('{"name":"Office","room":"Office","token":"secret"}')
+            satellite = _FakeSatellite()
+            client = TaterNativeClient(satellite, url="http://ha.test", device_id="stable-id", identity_file=path)
+            frames = []
+            client._submit_frame = frames.append
+            client._handle_message({"type": "identity.set", "id": "req-1", "payload": {"device_name": "Kitchen", "room": ""}})
+            reply = _json(frames[-1])
+            self.assertEqual(reply["type"], "identity.result")
+            self.assertEqual(reply["payload"], {"ok": True, "reply_to": "req-1", "device_name": "Kitchen", "room": ""})
+            self.assertEqual(satellite.state.friendly_name, "Kitchen")
+            self.assertEqual(_json(client._hello())["payload"]["device_id"], "stable-id")
+            restored = TaterNativeClient(_FakeSatellite(), url="http://ha.test", device_id="stable-id", device_name="Old name", room="Old room", identity_file=path)
+            self.assertEqual((restored.device_name, restored.room), ("Kitchen", ""))
+            self.assertTrue(restored.capabilities["identity_update"])
+            with patch("linux_voice_assistant.tater_native._save_identity", side_effect=OSError("disk error")):
+                client._handle_message({"type": "identity.set", "id": "req-2", "payload": {"device_name": "Bedroom", "room": "Bedroom"}})
+            self.assertFalse(_json(frames[-1])["payload"]["ok"])
+            self.assertEqual((client.device_name, client.room), ("Kitchen", ""))
+
     def test_normalize_tater_url_accepts_base_and_websocket_urls(self) -> None:
         self.assertEqual(normalize_tater_url("tater.local:8501"), "ws://tater.local:8501/api/tater/satellite/v1/ws")
         self.assertEqual(normalize_tater_url("https://tater.example"), "wss://tater.example/api/tater/satellite/v1/ws")

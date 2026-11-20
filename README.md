@@ -98,6 +98,13 @@ is saved to `--tater-token-file`; later starts can omit `--tater-token`.
 The satellite reconnects automatically when Tater or the network becomes
 available again.
 
+Updated Tater and HA bridge controllers can save a new satellite name and room
+live, without resetting or pairing again. These values are restored on startup
+from `tater-identity.json` beside the preferences file. Set
+`--tater-identity-file` to use another JSON file; only `name` and `room` are
+changed, preserving connection settings and unknown keys. ThirdReality uses
+its existing `/data/conf/tater.json`. A blank room clears the assignment.
+
 When native mode connects, Tater sends the device's current Voice settings.
 Changes made later in Tater are applied without restarting the satellite and
 are cached for the next boot. The bundled Hey Tater model and wake sounds work
@@ -154,6 +161,7 @@ options.
 | `--tater-device-id` | `TATER_DEVICE_ID` | Stable ID reported to Tater |
 | `--tater-board` | `TATER_BOARD` | Hardware identifier, such as `linux` or `reachy_mini` |
 | `--tater-room` | `TATER_ROOM` | Optional room reported to Tater |
+| `--tater-identity-file` | `TATER_IDENTITY_FILE` | Persistent name/room JSON; defaults beside the preferences file |
 | `--tater-reconnect-seconds` | `TATER_RECONNECT_SECONDS` | Delay between reconnect attempts |
 
 See [.env.example](.env.example) for audio, wake-word, sound, and runtime
