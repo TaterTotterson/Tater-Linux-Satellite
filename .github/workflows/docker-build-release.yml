@@ -1,70 +1,89 @@
----
 name: Build release
 
 on:
   push:
     tags:
-    - "v[0-9]+.[0-9]+.[0-9]+"              # For releases, e.g. v1.2.0
-    - "v[0-9]+.[0-9]+.[0-9]+-[a-zA-Z0-9]+" # For prereleases, e.g. v1.3.0-alpha1
+      - "v[0-9]+.[0-9]+.[0-9]+-tater[0-9]+"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing Tater Linux Satellite release tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: linux-release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-
+    timeout-minutes: 180
     steps:
-      - name: Checkout repository
+      - name: Check out release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate tag and create version files
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-tater[0-9]+$ ]]
+          COMMIT="$(git rev-parse HEAD)"
+          test "$COMMIT" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          VERSION="${RELEASE_TAG#v}"
+          printf '%s\n' "$VERSION" > version.txt
+          printf '%s\n' "$COMMIT" > version_githash.txt
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to the Container registry
         uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3.1.0
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # Build Docker Images (amd64 and arm64)
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Extract metadata for Docker
+
+      - name: Extract container metadata
         id: meta
         uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-          # E.g. tag v1.2.0 produces 3 tags: '1.2.0', '1.2', and 'latest'
-          # https://github.com/docker/metadata-action?tab=readme-ov-file#semver
+          images: ${{ steps.release.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Create version files
-        run: |
-          echo "${{ steps.meta.outputs.version }}" > version.txt
-          echo "${{ github.sha }}" > version_githash.txt
-          ls -ltr
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest
 
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0 # v5.3.0
         with:
           context: .
-          platforms: linux/amd64,linux/aarch64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=linux-satellite-release
+          cache-to: type=gha,mode=max,scope=linux-satellite-release
+
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v1.4.4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+          subject-name: ${{ steps.release.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-

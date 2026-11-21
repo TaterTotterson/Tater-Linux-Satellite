@@ -5,13 +5,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 LABEL \
-    org.opencontainers.image.authors="Open Home Foundation" \
-    org.opencontainers.image.description="Voice assistant for Home Assistant" \
-    org.opencontainers.image.documentation="https://github.com/OHF-Voice/linux-voice-assistant/blob/main/README.md" \
+    org.opencontainers.image.authors="Tater Contributors" \
+    org.opencontainers.image.description="Tater Linux voice satellite" \
+    org.opencontainers.image.documentation="https://github.com/TaterTotterson/Tater-Linux-Satellite/blob/main/README.md" \
     org.opencontainers.image.licenses="Apache-2.0" \
-    org.opencontainers.image.source="https://github.com/OHF-Voice/linux-voice-assistant" \
-    org.opencontainers.image.title="Linux-Voice-Assistant" \
-    org.opencontainers.image.url="https://github.com/OHF-Voice/linux-voice-assistant"
+    org.opencontainers.image.source="https://github.com/TaterTotterson/Tater-Linux-Satellite" \
+    org.opencontainers.image.title="Tater Linux Satellite" \
+    org.opencontainers.image.url="https://github.com/TaterTotterson/Tater-Linux-Satellite"
 
 ### Install packages:
 # - avahi-utils:        For zeroconf/mDNS discovery by Home Assistant

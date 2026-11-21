@@ -1,4 +1,4 @@
-# Unreleased
+# v1.1.13-tater5 - 2026-11-21
 
 - Share the ThirdReality wake profiles, calibrated ONNX openWakeWord and
   NanoWakeWord CNN/GRU workers, and optional dual-detector confirmation with
@@ -12,6 +12,10 @@
   continued conversation, live identity settings and on-demand Bluetooth.
 - Include ONNX and Sendspin in Docker, with optional installers for regular
   Linux setups. Physical satellite testing remains pending.
+- Publish amd64 and arm64 containers from the tagged source under the Tater
+  registry, including ONNX, the boundary model and the patched Sendspin player.
+- Refresh the README with current features, pairing and container setup; move
+  the detailed native settings reference into its own guide.
 
 <a id="v1.1.13-tater4"></a>
 # v1.1.13-tater4 - 2026-11-19

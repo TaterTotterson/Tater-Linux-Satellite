@@ -9,82 +9,67 @@
 
 # Tater Linux Satellite
 
-A Linux-native voice satellite runtime for
-[Tater](https://github.com/TaterTotterson/Tater).
+Turn a Linux computer, Raspberry Pi, or robot such as Reachy Mini into a
+hands-free voice satellite for [Tater](https://github.com/TaterTotterson/Tater).
+Wake-word detection runs locally; Tater handles speech recognition,
+conversation, tools, and spoken replies.
 
-This project turns a Linux computer, Raspberry Pi, or robot such as Reachy Mini
-into a dedicated Tater voice satellite. It detects wake words locally, streams
-speech to Tater, plays Tater's reply, and reconnects automatically if the
-network or Tater restarts.
+You can also connect through the
+[Tater Home Assistant bridge](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites).
+It provides Home Assistant and Mini-Tater modes for your satellites.
 
-The satellite connects outbound to Tater's native WebSocket protocol. Tater
-handles pairing, speech recognition, conversation, tools, text-to-speech, and
-device management; this runtime handles the local microphone, speaker, wake
-word, and optional peripherals.
+## What it can do
 
-## Features
+| Feature | What you get |
+| --- | --- |
+| Wake words | microWakeWord, ONNX openWakeWord, and NanoWakeWord CNN/GRU, with optional dual-detector confirmation and custom wake words. |
+| Natural speech | A local boundary model helps retain commands spoken immediately after the wake word. Optional STT verification checks false wakes separately. |
+| Conversations | Spoken replies, announcements, continued conversation, and automatic reconnects. Reply interruption is available with echo-cancelling microphone hardware. |
+| Music and audio | Sendspin playback and stereo channel routing, speech ducking, announcement overlays, and audio scenes with looping backgrounds, fades, and recovery from stalled playback. |
+| Timers | Local countdowns, alarms, cancel and snooze controls, and stop-word dismissal. Countdowns continue if the controller disconnects. |
+| Device settings | Pair with a code, then manage wake settings, volume, name, room, and supported peripherals from your controller. Name and room changes apply live. |
+| Bluetooth | On-demand discovery and a GATT proxy with secure PIN pairing. Bluetooth stays off when unused; active device connections keep it enabled. |
 
-- Native Tater pairing with a short pairing code
-- Durable per-device token stored with owner-only permissions
-- 16 kHz mono PCM audio streaming to Tater
-- Local Tater timers with list, cancel, snooze, offline countdown, alarm
-  playback, stop-word dismissal, and peripheral timer events
-- Reply, announcement, and continued-conversation playback
-- Persistent native music playback with stop, pause/resume, volume, looping,
-  resume positions, session status, and speech ducking
-- Local
-  [microWakeWord](https://github.com/kahrendt/microWakeWord) and
-  [openWakeWord](https://github.com/dscripka/openWakeWord) detection
-- NanoWakeWord CNN/GRU and ONNX openWakeWord, with calibrated bundles and optional
-  dual-detector confirmation
-- On-device wake-boundary inference keeps the beginning of commands spoken
-  immediately after the wake word
-- Sendspin music playback, stereo channel routing, announcement overlays, and
-  audio scenes with looping backgrounds, fades, ducking, and stall recovery
-- Optional second-STT wake verification with Observe, Enabled, and fail-open
-  behavior matching Tater Native firmware
-- On-demand BLE discovery and an Echo-compatible GATT proxy, with secure PIN
-  pairing and automatic discovery pauses during voice, playback, and media
-- Custom wake-word support through
-  [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words)
-- Live Tater Voice settings for wake word, wake sound, output volume, and
-  peripheral LED color, brightness, and phase animations
-- Automatic reconnect and session recovery
-- PulseAudio and PipeWire audio support
-- Optional WebSocket API for buttons, LEDs, and other peripherals
-- Linux AMD64 and ARM64 support
-- Python 3.11 through 3.13
+This is also the shared runtime used by
+[Tater ThirdReality firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware).
+That project adds the S420's hardware, setup, and signed firmware updates.
 
-## Requirements
+## What you need
 
-- A running [Tater Assistant](https://taterassistant.com) instance
-- Linux on AMD64 or ARM64
-- A microphone and speaker
-- Python 3.11 or newer
-- PulseAudio or PipeWire with PulseAudio compatibility
-- Network access from the satellite to Tater
+- Linux on **amd64 or arm64**, with a microphone and speaker.
+- PulseAudio, or PipeWire with PulseAudio compatibility, working on the host.
+- A running Tater instance or Tater Home Assistant bridge on your network.
+- Python **3.11 or newer** for a direct installation, or Docker with Compose.
 
-A microphone array with onboard noise reduction and echo cancellation will
-usually give the best far-field results.
+A microphone array with onboard echo cancellation is useful for talking while
+music or a reply is playing.
 
-## Quick Start
+## Get started
 
-### 1. Create a pairing code
+### 1. Install
 
-Open Tater, go to **Satellites**, choose **Add Satellite**, and keep the pairing
-code visible.
-
-### 2. Install the satellite
+On Debian, Ubuntu, or Raspberry Pi OS with an existing audio setup:
 
 ```sh
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-dev build-essential libmpv-dev libasound2-plugins
 git clone https://github.com/TaterTotterson/Tater-Linux-Satellite.git
-cd linux-voice-assistant
-./script/setup
+cd Tater-Linux-Satellite
+./script/setup --onnx
 ```
+
+`--onnx` enables the openWakeWord and NanoWakeWord engines. Use
+`./script/setup` for a smaller microWakeWord installation.
+
+### 2. Create a pairing code
+
+In Tater, open **Voice & devices → Satellites** and add a satellite. If you use
+the Home Assistant bridge, create the pairing code there and use its satellite
+connection URL.
 
 ### 3. Pair and run
 
-Replace the Tater URL and pairing code with your own:
+Replace the URL and code below with your own:
 
 ```sh
 ./script/run \
@@ -92,154 +77,99 @@ Replace the Tater URL and pairing code with your own:
   --tater-url http://tater.local:8501 \
   --tater-token 123456 \
   --tater-token-file ~/.config/tater-linux-satellite/device-token \
+  --preferences-file ~/.config/tater-linux-satellite/preferences.json \
   --tater-device-id office-satellite \
-  --tater-board linux \
-  --tater-room office
+  --tater-room Office
 ```
 
-The base HTTP URL is converted to Tater's native satellite WebSocket endpoint
-automatically. After the first successful connection, the durable device token
-is saved to `--tater-token-file`; later starts can omit `--tater-token`.
+After pairing, the device token is saved. Keep the same device ID and token
+file on later starts; you can remove `--tater-token` from the command.
 
-The satellite reconnects automatically when Tater or the network becomes
-available again.
+### 4. Choose your audio and wake settings
 
-Updated Tater and HA bridge controllers can save a new satellite name and room
-live, without resetting or pairing again. These values are restored on startup
-from `tater-identity.json` beside the preferences file. Set
-`--tater-identity-file` to use another JSON file; only `name` and `room` are
-changed, preserving connection settings and unknown keys. ThirdReality uses
-its existing `/data/conf/tater.json`. A blank room clears the assignment.
+Use the connected controller's satellite settings to choose wake words,
+detector, sensitivity, wake sound, and volume. Settings are saved for the next
+start.
 
-When native mode connects, Tater sends the device's current Voice settings.
-Changes made later in Tater are applied without restarting the satellite and
-are cached for the next boot. The bundled Hey Tater model and wake sounds work
-offline; catalog/custom wake words and custom sounds are downloaded once and
-then reused from the satellite's download directory.
-
-When STT Wake Verification is enabled in Tater, the satellite keeps a short
-rolling microphone window and asks Tater to confirm the detected phrase before
-playing the wake sound or opening the conversation. Observe mode records the
-same checks without delaying or rejecting wakes. Verification errors and
-timeouts fail open so an unavailable STT service cannot disable the satellite.
-
-On supported Linux satellites, Bluetooth stays off when unused. An explicit
-**Scan for devices** in Tater or the HA bridge starts a bounded discovery window;
-opening the Bluetooth page does not scan. Discovery pauses during voice activity
-and stops automatically. Up to two active GATT connections can remain open for
-devices such as Meshtastic, and keep the radio enabled until disconnected.
-Saved bonds alone do not start Bluetooth. Broadcast-only sensors are not
-monitored continuously, and Bluetooth speaker audio is outside this proxy.
-
-The proxy requires BlueZ (`bluetoothd`), a system D-Bus connection, a BLE adapter,
-and the Linux Bleak dependency installed with this project. The service user
-must have permission to manage that adapter. It owns the adapter's power state;
-use a dedicated adapter if the host also uses Bluetooth for unrelated devices.
-Missing hardware or permission errors leave voice service running. Bonds stay
-in BlueZ; authenticated bond markers (never PINs) use
-`~/.local/share/tater/bluetooth_bonds.json`, overridable with `TATER_BLE_BONDS_PATH`.
-
-## Audio And Wake Words
-
-List available audio devices:
+To find or select a microphone and speaker:
 
 ```sh
 ./script/run --list-input-devices
 ./script/run --list-output-devices
 ```
 
-Select devices when starting the satellite:
+Add `--audio-input-device "DEVICE"` or `--audio-output-device "DEVICE"` to your
+start command if the system defaults are wrong.
+
+## Prefer Docker?
+
+The release image is
+`ghcr.io/tatertotterson/tater-linux-satellite:1.1.13-tater5`, with **amd64 and
+arm64** builds. `:latest` follows releases. It includes ONNX wake detection,
+the boundary model, and Sendspin.
+
+From the cloned repository:
 
 ```sh
-./script/run \
-  --audio-input-device "INPUT DEVICE" \
-  --audio-output-device "OUTPUT DEVICE" \
-  --tater-url http://tater.local:8501 \
-  --tater-token-file ~/.config/tater-linux-satellite/device-token
+cp .env.example .env
 ```
 
-Wake-word models use a matching `.json` configuration and `.tflite` model.
-Browse shared models and custom-word tooling in
-[Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words), then
-select an installed model with `--wake-model`.
+Edit `.env` with your pairing details, device name, and host user ID. For example:
 
-Run `./script/run --help` for all audio, wake-word, sound, timer, and peripheral
-options.
+```dotenv
+CLIENT_NAME="Office Satellite"
+TATER_URL="http://tater.local:8501"
+TATER_TOKEN="123456"
+TATER_TOKEN_FILE="/app/configuration/tater-token"
+TATER_DEVICE_ID="office-satellite"
+TATER_ROOM="Office"
+```
 
-### Shared wake and audio features
+Then start it:
 
-Install with `./script/setup --onnx` to enable the ONNX openWakeWord and
-NanoWakeWord lanes. Choose the detector, CNN/GRU architecture, sensitivity,
-and environment profile in Tater's satellite settings. Bundles supply the
-recommended thresholds and patience; explicit tuning overrides are retained.
+```sh
+docker compose up -d
+docker compose logs -f linux-voice-assistant
+```
 
-The bundled Hey Tater endpoint model uses the same boundary policy as Native
-and Echo. Custom bundles can include their own boundary model. If no matching
-endpoint is available, the satellite keeps the audio rather than guessing a cut.
-The separate STT wake check still uses its configured audio window and timeout.
+The Compose file shares the host's PulseAudio/PipeWire socket and persists
+pairing, preferences, and downloaded models. Set `LVA_USER_ID` and
+`LVA_USER_GROUP` to your Linux user's UID and GID. After pairing, you can remove
+`TATER_TOKEN` from `.env`.
 
-The Docker image includes Sendspin. For a regular installation, install the
-Debian dependencies listed in `script/install-sendspin`, then run that script
-with a writable `--prefix` and put its `bin` directory on `PATH`. The player
-starts in Tater native mode when available and keeps its pairing state across
-voice reconnects. `TATER_DATA_DIR` optionally sets its configuration directory.
+For a direct installation, Sendspin is optional: follow the
+[Sendspin setup instructions](docs/native_satellite.md#shared-wake-and-audio-features).
 
-Playback interruption requires a microphone or audio backend that cancels
-speaker echo. Use `--microphone-has-aec` only with such hardware; Tater can then
-enable wake interruption during replies. S420's firmware adapter supplies its
-own playback reference and manages its own Sendspin service.
+## Help and configuration
 
-## Tater Settings
+- [Native settings, wake models, Bluetooth, and Sendspin](docs/native_satellite.md)
+- [Audio device options](docs/audio_options.md) and [host audio setup](docs/install_audioserver.md)
+- [Buttons, LEDs, and the peripheral API](docs/peripheral_api.md)
+- [Debugging](docs/debugging.md)
+- [.env.example](.env.example) for container settings, or `./script/run --help` for command-line options
+- [Releases and what changed](https://github.com/TaterTotterson/Tater-Linux-Satellite/releases)
 
-| Command-line option | Environment variable | Purpose |
-| --- | --- | --- |
-| `--tater-url` | `TATER_URL` | Tater base URL or native WebSocket URL |
-| `--tater-token` | `TATER_TOKEN` | One-time pairing code or existing device token |
-| `--tater-token-file` | `TATER_TOKEN_FILE` | Loads and stores the durable paired token |
-| `--tater-device-id` | `TATER_DEVICE_ID` | Stable ID reported to Tater |
-| `--tater-board` | `TATER_BOARD` | Hardware identifier, such as `linux` or `reachy_mini` |
-| `--tater-room` | `TATER_ROOM` | Optional room reported to Tater |
-| `--tater-identity-file` | `TATER_IDENTITY_FILE` | Persistent name/room JSON; defaults beside the preferences file |
-| `--tater-reconnect-seconds` | `TATER_RECONNECT_SECONDS` | Delay between reconnect attempts |
+## Tater projects
 
-See [.env.example](.env.example) for audio, wake-word, sound, and runtime
-settings.
-
-## Related Tater Projects
-
-- [Tater Assistant](https://taterassistant.com) — downloads, documentation, and
-  project information
-- [Tater](https://github.com/TaterTotterson/Tater) — the Tater Assistant core
-- [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
-  — native firmware for supported ESP32-S3 satellites
-- [Tater SAT1 RPi](https://github.com/TaterTotterson/Tater-SAT1-RPi)
-  — Raspberry Pi satellite-only and Tater Embedded images for Satellite1
-- [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
-  — Tater-native firmware for the ThirdReality S420 Linux satellite
-- [Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words) —
-  shared wake-word packages and training requests
-- [Reachy Home Assistant Satellite](https://huggingface.co/spaces/TaterTotterson/reachy_home_assistant_satellite)
-  — preserved ESPHome-style Home Assistant satellite for Reachy Mini
-- [Tater Reachy Standalone](https://huggingface.co/spaces/TaterTotterson/tater_reachy_standalone)
-  — Tater and its native satellite running together on Reachy Mini
-- [Reachy Tater Embedded](https://huggingface.co/spaces/TaterTotterson/reachy_tater_embedded)
-  — the full embedded Tater experience and native satellite on Reachy Mini
+- [Tater Assistant](https://taterassistant.com) — downloads and project information.
+- [Tater](https://github.com/TaterTotterson/Tater) — the main assistant app.
+- [Home Assistant bridge](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites) — Home Assistant integration and Mini-Tater.
+- [Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words) — shared wake models and training requests.
+- [Native firmware](https://github.com/TaterTotterson/Tater-Native-Firmware) — ESP32-S3 satellites.
+- [Echo firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware) — Echo satellites.
+- [ThirdReality firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware) — S420 hardware support.
+- [SAT1 RPi](https://github.com/TaterTotterson/Tater-SAT1-RPi) — Raspberry Pi satellite and embedded images for Satellite1.
+- [Reachy Mini projects](docs/native_satellite.md#reachy-mini-projects).
 
 ## Development
 
 ```sh
-./script/setup --dev
+./script/setup --dev --onnx
 ./script/test
 ./script/lint
 ```
 
-This fork builds on the Linux audio and wake-word foundation from
+Built on the Linux audio and wake-word foundation from
 [OHF-Voice/linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant).
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE.md).
-
-## Trademarks
-
-The Tater name and logo are governed by the [Tater Trademark Policy](TRADEMARKS.md).
+Licensed under [Apache 2.0](LICENSE.md). The Tater name and logo follow the
+[Tater Trademark Policy](TRADEMARKS.md).
