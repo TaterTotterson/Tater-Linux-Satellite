@@ -1,4 +1,4 @@
-# v1.2.0 - 2026-11-21
+# 1.2.0
 
 - Use standard semantic version numbers for Linux Satellite releases, starting
   with 1.2.0.
