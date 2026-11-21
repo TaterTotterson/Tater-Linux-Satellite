@@ -1,0 +1,60 @@
+From 0b9a67ce8547a07bd7e153c292cfa6e120c3e212 Mon Sep 17 00:00:00 2001
+From: TaterTotterson <tater@tatertotterson.com>
+Date: Sat, 10 Oct 2026 01:28:00 -0500
+Subject: [PATCH] Accept legacy Noise handshakes without psk_category
+
+Music Assistant's aiosendspin 9.1.1 sends psk_id in the encrypted Noise
+message but predates the psk_category field. Infer the category from the
+credential named by psk_id for that legacy form. Keep rejecting an explicit
+unknown category and retain the normal Sentinel fallback for an unknown PSK.
+This matches the compatibility behavior used by Tater Echo players while
+preserving the long-term server binding check.
+---
+ deps/sendspin/src/noise_handshake.cpp | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/deps/sendspin/src/noise_handshake.cpp b/deps/sendspin/src/noise_handshake.cpp
+index 65b90ca..4524589 100644
+--- a/deps/sendspin/src/noise_handshake.cpp
++++ b/deps/sendspin/src/noise_handshake.cpp
+@@ -174,12 +174,34 @@ std::optional<Msg1CoreResult> run_msg1_core(
+         return std::nullopt;
+     }
+ 
+-    // messaging.md "noise/handshake": the payload declares which category the server is using the
+-    // referenced PSK as. A missing or unknown code is a malformed payload, which connection.md
+-    // "Failure Handling" makes a silent failure.
++    // messaging.md "noise/handshake": current servers declare which category they are using the
++    // referenced PSK as. aiosendspin 9.1.1 predates psk_category, but still sends psk_id inside
++    // the authenticated payload. For that legacy form only, infer the category from the exact
++    // credential named by psk_id. An explicit unknown category remains malformed.
+     auto psk_category = psk_category_from_string(psk_category_code);
++    if (!psk_category.has_value() && psk_category_code.empty()) {
++        if (record_store.resolve_by_psk_id(psk_id, PskCategory::LONG_TERM).has_value()) {
++            psk_category = PskCategory::LONG_TERM;
++            psk_category_code = "lt";
++        } else if (record_store.resolve_by_psk_id(psk_id, PskCategory::PAIRING).has_value()) {
++            psk_category = PskCategory::PAIRING;
++            psk_category_code = "pr";
++        } else if (record_store.resolve_by_psk_id(psk_id, PskCategory::SENTINEL).has_value()) {
++            psk_category = PskCategory::SENTINEL;
++            psk_category_code = "sn";
++        } else {
++            // Preserve initial-handshake credential recovery below: an unknown legacy psk_id is
++            // treated as a long-term lookup miss and answered with the Sentinel PSK. An in-band
++            // re-handshake still aborts on the same miss.
++            psk_category = PskCategory::LONG_TERM;
++            psk_category_code = "lt";
++        }
++        SS_LOGW(TAG,
++                "%s: legacy msg1 omitted psk_category; inferred '%s' from psk_id='%s'",
++                log_prefix, psk_category_code.c_str(), psk_id.c_str());
++    }
+     if (!psk_category.has_value()) {
+-        SS_LOGE(TAG, "%s: msg1 payload psk_category missing or unknown ('%s')", log_prefix,
++        SS_LOGE(TAG, "%s: msg1 payload psk_category unknown ('%s')", log_prefix,
+                 psk_category_code.c_str());
+         return std::nullopt;
+     }
+-- 
+2.51.0

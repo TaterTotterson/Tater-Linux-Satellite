@@ -1,0 +1,38 @@
+From 7d6b96f6f43411426577bbca70a86e1ed859b6b3 Mon Sep 17 00:00:00 2001
+From: TaterTotterson <tater@tatertotterson.com>
+Date: Sat, 10 Oct 2026 00:46:00 -0500
+Subject: [PATCH] Do not advertise Opus when its decoder is disabled
+
+The CLI's format generator unconditionally included Opus whenever the output
+device could carry its audio shape. A sendspin-cpp build with
+SENDSPIN_ENABLE_OPUS=OFF then rejected its own player configuration and exited
+before opening the listener. Keep FLAC and PCM available while omitting the
+codec that this build cannot decode.
+---
+ src/supported_formats.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/supported_formats.cpp b/src/supported_formats.cpp
+index 316d9f6..104ab97 100644
+--- a/src/supported_formats.cpp
++++ b/src/supported_formats.cpp
+@@ -36,9 +36,16 @@ constexpr uint8_t OPUS_MAX_CHANNELS = 2;
+ 
+ // Advertisement ranking: servers take the first entry they can encode, so order matters.
+ 
++#ifdef SENDSPIN_ENABLE_OPUS
+ /// Lossless first, then Opus, then PCM.
+ constexpr std::array<SendspinCodecFormat, 3> CODEC_PREFERENCE{
+     SendspinCodecFormat::FLAC, SendspinCodecFormat::OPUS, SendspinCodecFormat::PCM};
++#else
++/// Lossless first, then PCM. This build cannot decode Opus and sendspin-cpp rejects an
++/// advertisement containing it.
++constexpr std::array<SendspinCodecFormat, 2> CODEC_PREFERENCE{
++    SendspinCodecFormat::FLAC, SendspinCodecFormat::PCM};
++#endif
+ 
+ /// 48 kHz and 44.1 kHz first, then the high-resolution rates, then the rates below CD.
+ constexpr std::array<uint32_t, 8> RATE_PREFERENCE{48000,  44100,  96000, 88200,
+-- 
+2.51.0
+

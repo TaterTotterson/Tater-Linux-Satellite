@@ -1,0 +1,84 @@
+From 0bde282440f55284a85e29a1ef33efe24a887af2 Mon Sep 17 00:00:00 2001
+From: TaterTotterson <tater@tatertotterson.com>
+Date: Sat, 10 Oct 2026 13:40:00 -0500
+Subject: [PATCH] Match the aiosendspin 9.1.1 player wire
+
+Music Assistant 2.10.x ships aiosendspin 9.1.1. Its encrypted handshake is
+compatible with current sendspin-cpp, but its application schema predates a
+few later spec renames. Emit the 9.1.1 player shapes, as the Tater Echo
+client already does, so Music Assistant can parse client/hello and the first
+client/state instead of closing an otherwise successful Noise connection.
+---
+ deps/sendspin/src/protocol.cpp | 38 ++++++++++++++++++++++++++++----------
+ 1 file changed, 28 insertions(+), 10 deletions(-)
+
+diff --git a/deps/sendspin/src/protocol.cpp b/deps/sendspin/src/protocol.cpp
+index 72df27b..34d8bd9 100644
+--- a/deps/sendspin/src/protocol.cpp
++++ b/deps/sendspin/src/protocol.cpp
+@@ -877,14 +877,23 @@ std::string format_client_hello_message(const ClientHelloMessage* msg,
+             root["payload"]["device_info"]["mac_address"] = info.mac_address.value();
+         }
+     }
+-    // pairing.md "client/hello pair-method descriptor": supported_pair_methods is an object keyed
+-    // by pairing method identifier, each value the method's descriptor. It is REQUIRED (every
+-    // client implements at least pairing_psk, messaging.md "client/hello"), so the object is
+-    // emitted even for an empty list.
++    // aiosendspin 9.1.1 (used by Music Assistant 2.10.x) predates the current keyed-object
++    // supported_pair_methods form. It requires a list of descriptors carrying an explicit
++    // method field. Keep that deployed wire shape until Music Assistant moves to the newer
++    // schema.
+     {
+-        JsonObject methods_obj = root["payload"]["supported_pair_methods"].to<JsonObject>();
++        JsonArray methods_list = root["payload"]["supported_pair_methods"].to<JsonArray>();
+         for (const auto& desc : msg->supported_pair_methods) {
++            // The current dynamic/static pairing-code flows were renamed and reshaped after
++            // aiosendspin 9.1.1 (dynamic_pin/static_pin). Advertising their newer names makes
++            // Music Assistant reject the entire hello. The S420 has no pairing display and
++            // already supports the pairing-token path, so only advertise the compatible PSK
++            // method rather than claiming an incompatible interactive pairing flow.
++            if (desc.method != SendspinPairMethod::PAIRING_PSK) {
++                continue;
++            }
+-            JsonObject method_obj = methods_obj[to_cstr(desc.method)].to<JsonObject>();
++            JsonObject method_obj = methods_list.add<JsonObject>();
++            method_obj["method"] = to_cstr(desc.method);
+             const auto& out_channels = desc.out_channels;
+             if (out_channels.has_value() && !out_channels->empty()) {
+                 JsonArray ch_arr = method_obj["out_channels"].to<JsonArray>();
+@@ -926,6 +927,11 @@ std::string format_client_hello_message(const ClientHelloMessage* msg,
+         }
+         root["payload"]["player@v1_support"]["buffer_capacity"] =
+             msg->player_v1_support.value().buffer_capacity;
++        // Required by aiosendspin 9.1.1 in client/hello. The host player implements both.
++        JsonArray commands =
++            root["payload"]["player@v1_support"]["supported_commands"].to<JsonArray>();
++        commands.add("volume");
++        commands.add("mute");
+     }
+ 
+     if (msg->visualizer_support.has_value()) {
+@@ -963,14 +969,19 @@ std::string format_client_state_message(const ClientStateMessage* msg,
+         const ClientPlayerStateObject& player_state = msg->player.value();
+         root["payload"]["player"]["volume"] = player_state.volume;
+         root["payload"]["player"]["muted"] = player_state.muted;
+-        root["payload"]["player"]["output_delay_ms"] = player_state.output_delay_ms;
++        // aiosendspin 9.1.1 calls this static_delay_ms.
++        root["payload"]["player"]["static_delay_ms"] = player_state.output_delay_ms;
+         root["payload"]["player"]["required_lead_time_ms"] = player_state.required_lead_time_ms;
+         root["payload"]["player"]["min_buffer_ms"] = player_state.min_buffer_ms;
+         // roles/player/v1.md "client/state player object": supported_commands is a required key
+         // that is empty when the player accepts no commands, so the array is emitted even then.
+         JsonArray commands_list = root["payload"]["player"]["supported_commands"].to<JsonArray>();
+         for (const auto& cmd : player_state.supported_commands) {
+-            commands_list.add(to_cstr(cmd));
++            // 9.1.1 carries volume/mute capability in client/hello. Its state-level command
++            // enum accepts only set_static_delay and rejects the whole state for volume/mute.
++            if (cmd == SendspinPlayerCommand::SET_OUTPUT_DELAY) {
++                commands_list.add("set_static_delay");
++            }
+         }
+     }
+ 
+-- 
+2.51.0

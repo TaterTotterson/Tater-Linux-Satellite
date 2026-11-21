@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Build the same pinned C++ Sendspin player used by ThirdReality.
+
+Debian dependencies: cmake make g++ git pkg-config libpulse-dev libavahi-client-dev
+                    libssl-dev zlib1g-dev curl
+"""
+
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+CLI_COMMIT = "05f99441f6a1255a1becf3cf4ab65eead11d63d8"
+LIB_COMMIT = "1d9ef34a97e5422ce634b162910e60001d213ced"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--prefix", default="/usr/local")
+parser.add_argument("--jobs", type=int, default=2)
+args = parser.parse_args()
+patches = Path(__file__).parent / "sendspin-patches"
+with tempfile.TemporaryDirectory(prefix="tater-sendspin-build-") as directory:
+    root = Path(directory)
+    archive = root / "cli.tar.gz"
+    subprocess.run(
+        [
+            "curl",
+            "--fail",
+            "--location",
+            "--retry",
+            "3",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "180",
+            f"https://github.com/Sendspin/sendspin-cpp-cli/archive/{CLI_COMMIT}.tar.gz",
+            "--output",
+            str(archive),
+        ],
+        check=True,
+    )
+    source = root / "source"
+    source.mkdir()
+    subprocess.run(["tar", "-xzf", str(archive), "--strip-components=1", "-C", str(source)], check=True)
+    # FetchContent dependencies remain pinned by the upstream CMake files.
+    lib = source / "deps/sendspin"
+    subprocess.run(["git", "clone", "--quiet", "https://github.com/Sendspin/sendspin-cpp.git", str(lib)], check=True)
+    subprocess.run(["git", "checkout", "--quiet", LIB_COMMIT], cwd=lib, check=True)
+    for patch in sorted(patches.glob("*.patch")):
+        subprocess.run(["git", "apply", str(patch.resolve())], cwd=source, check=True)
+    build = root / "build"
+    subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(source),
+            "-B",
+            str(build),
+            f"-DCMAKE_INSTALL_PREFIX={args.prefix}",
+            "-DCMAKE_BUILD_TYPE=Release",
+            f"-DFETCHCONTENT_SOURCE_DIR_SENDSPIN={lib}",
+            f"-DSENDSPIN_GIT_TAG={LIB_COMMIT}",
+            "-DSENDSPIN_ENABLE_OPUS=OFF",
+            "-DSENDSPIN_CLI_BUILD_TESTS=OFF",
+            "-DSENDSPIN_CLI_WITH_PULSE=ON",
+            "-DSENDSPIN_CLI_WITH_ALSA=OFF",
+            "-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF",
+            "-DSENDSPIN_CLI_WITH_PIPEWIRE=OFF",
+        ],
+        check=True,
+    )
+    subprocess.run(["cmake", "--build", str(build), "--parallel", str(max(1, args.jobs))], check=True)
+    subprocess.run(["cmake", "--install", str(build)], check=True)
+
+capability = Path(args.prefix) / "share/tater-sendspin-channel-routing"
+capability.parent.mkdir(parents=True, exist_ok=True)
+capability.write_text(CLI_COMMIT + "\n")

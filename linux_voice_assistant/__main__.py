@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 from queue import Queue
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
 import soundcard as sc
@@ -276,6 +276,7 @@ async def main() -> None:
         action="store_true",
         help="Enable output only mode",
     )
+    parser.add_argument("--microphone-has-aec", action="store_true", help="Enable playback wake/barge-in controls for microphones that already cancel speaker echo")
     args = parser.parse_args()
 
     if args.list_input_devices:
@@ -471,6 +472,8 @@ async def main() -> None:
         timer_max_ring_seconds=args.timer_max_ring_seconds,
         native_settings=dict(preferences.native_settings),
     )
+
+    state.tater_playback_reference_aec = args.microphone_has_aec
 
     if preferences.native_settings:
         try:
@@ -720,6 +723,10 @@ def process_audio(
                 if state.satellite is None or not hasattr(state.satellite, "_is_streaming_audio"):
                     continue
 
+                tater_features = getattr(state.satellite, "_tater_features", None)
+                if tater_features is not None and not state.muted:
+                    tater_features.submit_wake_audio(audio_chunk)
+
                 # WAKE WORD
                 if (not wake_words_initialized) or state.wake_words_changed:
                     # Update list of wake word models to process
@@ -839,7 +846,7 @@ def process_audio(
                             # set microWakeWord cutoff
                             wake_word.probability_cutoff = threshold
 
-                            for micro_input in micro_inputs:
+                            for micro_input in micro_inputs if tater_features is None or tater_features.wake_mww_enabled() or wake_word is state.stop_word else []:
                                 if wake_word.process_streaming(micro_input):
                                     wake_word.debug_probabilities = True
                                     activated = True
@@ -850,11 +857,18 @@ def process_audio(
                                         _LOGGER.debug("Wake word '%s' activated (probability %.3f exceeded threshold %.3f)", wake_word.wake_word, prob, threshold)  # type: ignore[attr-defined]
                                         activated = True
 
+                        if tater_features is not None and isinstance(wake_word, MicroWakeWord) and wake_word is not state.stop_word:
+                            activated = tater_features.resolve_wake_detection(activated)
                         if activated and not state.muted:
                             # Check refractory
                             now = time.monotonic()
                             if (last_active is None) or ((now - last_active) > state.refractory_seconds):
-                                state.satellite.wakeup(wake_word)
+                                wake_candidate: Any = wake_word
+                                if tater_features is not None and not tater_features.wake_mww_enabled() and tater_features._oww_model_name:  # pylint: disable=protected-access
+                                    from types import SimpleNamespace
+
+                                    wake_candidate = SimpleNamespace(id=wake_word.id, wake_word=tater_features._oww_model_name)  # pylint: disable=protected-access
+                                state.satellite.wakeup(wake_candidate)
                                 last_active = now
 
                     # Always process to keep state correct

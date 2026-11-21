@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tater <firmware@tater.local>
+Date: Wed, 7 Oct 2026 00:00:00 -0500
+Subject: [PATCH] Add Tater output channel routing
+
+Keep the official Sendspin protocol, pairing, clock, decoder, and PulseAudio
+sink unchanged while allowing a mono satellite to select the left or right
+side of a stereo-pair stream. The mode is read once at startup from the
+environment so the firmware service can persist it alongside Tater live
+settings.
+---
+ src/pulse_sink.cpp | 58 +++++++++++++++++++++++++++++++++++++++++++++---
+ src/pulse_sink.h   | 11 ++++++++-
+ 2 files changed, 66 insertions(+), 3 deletions(-)
+
+diff --git a/src/pulse_sink.cpp b/src/pulse_sink.cpp
+index c8f4883..fc295bd 100644
+--- a/src/pulse_sink.cpp
++++ b/src/pulse_sink.cpp
+@@ -21,6 +21,7 @@
+ #include <array>
+ #include <atomic>
+ #include <chrono>
++#include <cstdlib>
+ #include <mutex>
+ #include <string>
+ #include <vector>
+@@ -53,6 +54,26 @@ constexpr std::array<pa_sample_format_t, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{
+ constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"u8", "s16le",
+                                                                               "s24le", "s32le"};
+ 
++/// Read one signed little-endian PCM sample of width 1 through 4 bytes.
++int32_t read_sample(const uint8_t* sample, size_t width) {
++    uint32_t value = 0;
++    for (size_t index = 0; index < width; ++index) {
++        value |= static_cast<uint32_t>(sample[index]) << (index * 8U);
++    }
++    if (width < sizeof(value) && (value & (1U << (width * 8U - 1U))) != 0) {
++        value |= ~0U << (width * 8U);
++    }
++    return static_cast<int32_t>(value);
++}
++
++/// Write one signed little-endian PCM sample of width 1 through 4 bytes.
++void write_sample(uint8_t* sample, size_t width, int32_t value) {
++    const uint32_t encoded = static_cast<uint32_t>(value);
++    for (size_t index = 0; index < width; ++index) {
++        sample[index] = static_cast<uint8_t>(encoded >> (index * 8U));
++    }
++}
++
+ /// Maps the stream's bit depth onto the PulseAudio sample format it is carried in.
+ bool pulse_format_for(uint8_t bits_per_sample, pa_sample_format_t& format) {
+     for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
+@@ -258,6 +279,22 @@ std::string PulseConnection::server_name() const {
+ 
+ PulseAudioSink::PulseAudioSink(std::string device, uint32_t buffer_ms)
+     : device_(std::move(device)), buffer_ms_(buffer_ms) {
++    const char* requested = std::getenv("TATER_SENDSPIN_OUTPUT_CHANNEL");
++    const std::string channel = requested != nullptr ? requested : "stereo";
++    std::string applied_channel = channel;
++    if (channel == "left") {
++        this->output_channel_ = OutputChannel::Left;
++    } else if (channel == "right") {
++        this->output_channel_ = OutputChannel::Right;
++    } else if (channel == "mono") {
++        this->output_channel_ = OutputChannel::Mono;
++    } else if (channel != "stereo") {
++        cli_log(LogLevel::WARN,
++                "pulse: unsupported Tater output channel '%s'; using stereo", channel.c_str());
++        applied_channel = "stereo";
++    }
++    cli_log(LogLevel::INFO, "pulse: Tater output channel is %s", applied_channel.c_str());
++
+     std::string error;
+     if (!this->conn_.connect(error)) {
+         // Degrade to discarding; configure() reconnects.
+@@ -297,7 +334,7 @@ std::string PulseAudioSink::name() const {
+ }
+ 
+ SinkCapabilities PulseAudioSink::capabilities() const {
+-    return SinkCapabilities::permissive();
++    return {{48000}, {16}, {2}};
+ }
+ 
+ bool PulseAudioSink::probe(const std::string& device, std::string& error) {
+@@ -825,15 +862,34 @@ const uint8_t* PulseAudioSink::stage_(const uint8_t* data, size_t frames, uint64
+     const bool scaling = (start != target) || (target != Q32_ONE);
+     // 8-bit always needs the copy to flip the sign bit.
+     const bool converting = this->bits_ == 8;
+-    if (!scaling && !converting) {
++    const bool routing =
++        this->output_channel_ != OutputChannel::Stereo && this->channels_ >= 2;
++    if (!scaling && !converting && !routing) {
+         return data;
+     }
+ 
+     const size_t bytes = frames * this->bytes_per_frame_;
+     this->scratch_.assign(data, data + bytes);
++    const size_t sample_width = this->bits_ / 8U;
++    if (routing && sample_width >= 1 && sample_width <= 4) {
++        for (size_t frame = 0; frame < bytes; frame += this->bytes_per_frame_) {
++            uint8_t* samples = this->scratch_.data() + frame;
++            int32_t routed = read_sample(samples, sample_width);
++            if (this->output_channel_ == OutputChannel::Right) {
++                routed = read_sample(samples + sample_width, sample_width);
++            } else if (this->output_channel_ == OutputChannel::Mono) {
++                const int64_t left = read_sample(samples, sample_width);
++                const int64_t right = read_sample(samples + sample_width, sample_width);
++                routed = static_cast<int32_t>((left + right) / 2);
++            }
++            for (uint8_t channel = 0; channel < this->channels_; ++channel) {
++                write_sample(samples + (channel * sample_width), sample_width, routed);
++            }
++        }
++    }
+     if (scaling) {
+-        apply_volume_ramp(this->scratch_.data(), bytes, this->bits_ / 8U, this->channels_, start,
+-                          target, this->ramp_step_);
++        apply_volume_ramp(this->scratch_.data(), bytes, sample_width, this->channels_, start, target,
++                          this->ramp_step_);
+     }
+     if (converting) {
+         for (uint8_t& sample : this->scratch_) {
+diff --git a/src/pulse_sink.h b/src/pulse_sink.h
+index 8fc54a6..dfd9910 100644
+--- a/src/pulse_sink.h
++++ b/src/pulse_sink.h
+@@ -165,6 +165,13 @@ public:
+     static void list_devices(std::FILE* out);
+ 
+ private:
++    enum class OutputChannel {
++        Stereo,
++        Left,
++        Right,
++        Mono,
++    };
++
+     static void stream_state_cb(pa_stream* stream, void* userdata);
+     static void stream_write_cb(pa_stream* stream, size_t nbytes, void* userdata);
+     static void stream_underflow_cb(pa_stream* stream, void* userdata);
+@@ -191,6 +198,8 @@ private:
+ 
+     /// The sink name as -o spelled it, empty for the server's default.
+     std::string device_;
++    /// Tater stereo-pair routing selected before the process starts.
++    OutputChannel output_channel_{OutputChannel::Stereo};
+     uint32_t buffer_ms_;
+ 
+     /// Serialises the stream, the format fields and the volume ramp.
+@@ -204,7 +213,7 @@ private:
+     size_t bytes_per_frame_{0};
+     /// Per-frame gain increment for this stream's rate, from volume_ramp_step().
+     uint64_t ramp_step_{0};
+-    /// Scaled copy of the caller's PCM, reused across writes.
++    /// Channel-routed and scaled copy of the caller's PCM, reused across writes.
+     std::vector<uint8_t> scratch_;
+ 
+     /// Bumped on open, close or flush; a write() that waited compares it on waking.
+-- 
+2.50.1

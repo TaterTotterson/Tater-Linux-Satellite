@@ -35,6 +35,14 @@ RUN apt-get update && \
     pipewire-alsa \
     pipewire-pulse \
     build-essential \
+    cmake \
+    git \
+    pkg-config \
+    curl \
+    libpulse-dev \
+    libavahi-client-dev \
+    libssl-dev \
+    zlib1g-dev \
     libmpv-dev \
     libasound2-plugins \
     ca-certificates \
@@ -48,6 +56,7 @@ WORKDIR /app
 
 ### Copy all application files:
 COPY script/ ./script/
+RUN ./script/install-sendspin
 COPY pyproject.toml ./
 COPY setup.cfg ./
 COPY sounds/ ./sounds/
@@ -59,10 +68,11 @@ COPY version_githash.txt ./
 
 ### Run installation:
 RUN chmod +x docker-entrypoint.sh
-RUN ./script/setup
+RUN ./script/setup --onnx
 
 ### Set ports for ESPHome API:
-EXPOSE 6053
+EXPOSE 6053 8928
+ENV TATER_DATA_DIR=/app/configuration/tater-features
 
 ### Set start script:
 ENTRYPOINT ["./docker-entrypoint.sh"]

@@ -85,6 +85,57 @@ class MpvMediaPlayer:
         if event_callback is not None:
             event_callback("started", "")
 
+    def prepare_synchronized(
+        self,
+        url: str,
+        *,
+        channel: str = "stereo",
+        loop: bool = False,
+        done_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Load one media URL paused for a clock-scheduled Tater start."""
+        if self._done_callback is not None:
+            if self._player.state() != PlayerState.IDLE:
+                self._player.stop(for_replacement=True)
+            self._done_callback = None
+        self._playlist = []
+        self._done_callback = done_callback
+        self._player.prepare_synchronized(
+            url,
+            channel=channel,
+            loop=loop,
+            done_callback=self._on_track_finished,
+        )
+
+    def synchronized_snapshot(self) -> dict:
+        """Return the current mpv clock/cache state for Tater telemetry."""
+        return self._player.synchronized_snapshot()
+
+    def seek_synchronized(self, position_seconds: float) -> None:
+        """Seek the prepared media timeline without resuming playback."""
+        self._player.seek_synchronized(position_seconds)
+
+    def jump_synchronized(self, delta_seconds: float) -> None:
+        """Move an active synchronized timeline without blocking the caller."""
+        self._player.jump_synchronized(delta_seconds)
+
+    def set_synchronized_speed(self, speed: float) -> None:
+        """Apply a tiny temporary rate slew used for drift correction."""
+        self._player.set_synchronized_speed(speed)
+
+    def resume_synchronized(self) -> None:
+        """Queue a scheduled resume without waiting on MPV's render thread."""
+        self._player.resume_synchronized()
+
+    def reset_synchronized(self) -> None:
+        """Restore normal rate and stereo routing after a Tater session."""
+        self._player.reset_synchronized()
+
+    @property
+    def synchronized_controls_available(self) -> bool:
+        """Allow firmware overlays to advertise sync only with this API."""
+        return True
+
     def _on_track_finished(self) -> None:
         """Called when a track finishes - plays next or invokes done callback."""
         if self._playlist:

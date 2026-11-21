@@ -154,6 +154,7 @@ class ServerState:
     # Optional Tater-native callback used to report physical volume changes
     # back to the server so its settings slider stays in sync.
     native_settings_reporter: "Optional[Any]" = None
+    tater_playback_reference_aec: bool = False
 
     sensitivity_1_number_entity: "Optional[WakeWord1SensitivityNumberEntity]" = None
     sensitivity_2_number_entity: "Optional[WakeWord2SensitivityNumberEntity]" = None

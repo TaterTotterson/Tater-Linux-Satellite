@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dev", action="store_true", help="Install dev requirements")
 parser.add_argument("--cxxflags", type=str, help="CXXFLAGS for compilation (default: -O1 -g0)")
 parser.add_argument("--makeflags", type=str, help="MAKEFLAGS for compilation (default: -j1)")
+parser.add_argument("--onnx", action="store_true", help="Install ONNX Runtime for NanoWakeWord/openWakeWord")
 args = parser.parse_args()
 
 # Create virtual environment
@@ -33,12 +34,9 @@ subprocess.check_call(pip + ["install", "--upgrade", "pip"])
 subprocess.check_call(pip + ["install", "--upgrade", "setuptools", "wheel"])
 
 # Install requirements
-subprocess.check_call(pip + ["install", "-e", str(_PROGRAM_DIR)])
+subprocess.check_call(pip + ["install", "-e", f"{_PROGRAM_DIR}[onnx]" if args.onnx else str(_PROGRAM_DIR)])
 
 
 # Install dev requirements
 if args.dev:
-    subprocess.check_call(
-        pip + ["install", "-e", f"{_PROGRAM_DIR}[dev]"],
-        env={**dict(os.environ), **env}
-    )
+    subprocess.check_call(pip + ["install", "-e", f"{_PROGRAM_DIR}[dev]"], env={**dict(os.environ), **env})

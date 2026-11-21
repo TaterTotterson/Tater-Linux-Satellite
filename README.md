@@ -35,6 +35,12 @@ word, and optional peripherals.
 - Local
   [microWakeWord](https://github.com/kahrendt/microWakeWord) and
   [openWakeWord](https://github.com/dscripka/openWakeWord) detection
+- NanoWakeWord CNN/GRU and ONNX openWakeWord, with calibrated bundles and optional
+  dual-detector confirmation
+- On-device wake-boundary inference keeps the beginning of commands spoken
+  immediately after the wake word
+- Sendspin music playback, stereo channel routing, announcement overlays, and
+  audio scenes with looping backgrounds, fades, ducking, and stall recovery
 - Optional second-STT wake verification with Observe, Enabled, and fail-open
   behavior matching Tater Native firmware
 - On-demand BLE discovery and an Echo-compatible GATT proxy, with secure PIN
@@ -159,6 +165,29 @@ select an installed model with `--wake-model`.
 
 Run `./script/run --help` for all audio, wake-word, sound, timer, and peripheral
 options.
+
+### Shared wake and audio features
+
+Install with `./script/setup --onnx` to enable the ONNX openWakeWord and
+NanoWakeWord lanes. Choose the detector, CNN/GRU architecture, sensitivity,
+and environment profile in Tater's satellite settings. Bundles supply the
+recommended thresholds and patience; explicit tuning overrides are retained.
+
+The bundled Hey Tater endpoint model uses the same boundary policy as Native
+and Echo. Custom bundles can include their own boundary model. If no matching
+endpoint is available, the satellite keeps the audio rather than guessing a cut.
+The separate STT wake check still uses its configured audio window and timeout.
+
+The Docker image includes Sendspin. For a regular installation, install the
+Debian dependencies listed in `script/install-sendspin`, then run that script
+with a writable `--prefix` and put its `bin` directory on `PATH`. The player
+starts in Tater native mode when available and keeps its pairing state across
+voice reconnects. `TATER_DATA_DIR` optionally sets its configuration directory.
+
+Playback interruption requires a microphone or audio backend that cancels
+speaker echo. Use `--microphone-has-aec` only with such hardware; Tater can then
+enable wake interruption during replies. S420's firmware adapter supplies its
+own playback reference and manages its own Sendspin service.
 
 ## Tater Settings
 

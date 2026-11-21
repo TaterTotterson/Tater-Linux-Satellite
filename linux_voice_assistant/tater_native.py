@@ -38,7 +38,10 @@ from google.protobuf import message
 from .bluetooth_proxy import BluetoothProxy
 from .native_timers import NativeTimerManager
 from .peripheral_api import LVAEvent
-from .satellite_identity import identity_text as _identity_text, save_identity as _save_identity
+from .satellite_identity import identity_text as _identity_text
+from .satellite_identity import save_identity as _save_identity
+from .sendspin import SendspinPlayer
+from .wake_boundary import WakeAudioBuffer, WakeBoundaryModel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -235,7 +238,9 @@ class TaterNativeClient:
             "ble_advertisements_version": 1,
         }
         if capabilities:
-            self.capabilities.update({str(key): value if isinstance(value, (bool, int, float, str)) else bool(value) for key, value in capabilities.items()})
+            self.capabilities.update(
+                {str(key): value if isinstance(value, (bool, int, float, str)) else value if isinstance(value, (list, dict)) else bool(value) for key, value in capabilities.items()}
+            )
         self.capabilities["identity_update"] = self.identity_file is not None
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -245,8 +250,21 @@ class TaterNativeClient:
         self._outgoing: asyncio.Queue[str | bytes] = asyncio.Queue(maxsize=OUTGOING_QUEUE_MAX)
         self._started_monotonic = time.monotonic()
         self._audio_drops = 0
+        self.uses_shared_features = True
+        self._wake_capture = WakeAudioBuffer()
+        self._boundary_model = WakeBoundaryModel()
+        self._boundary_task: asyncio.Task[None] | None = None
+        self._starting_local_wake = False
+        self._boundary_generation = 0
+        self.sendspin = SendspinPlayer(self.device_id, self.device_name)
+        from .tater_features import TaterFeatureManager
+
+        self.features = TaterFeatureManager(self)
+        self.capabilities.update(self.features.capabilities)
+        self.capabilities["wake_preroll_boundary"] = 1
+
         self._voice_start_pending = False
-        self._audio_preroll: deque[bytes] = deque(maxlen=VOICE_PREROLL_MAX_CHUNKS)
+        self._audio_preroll: deque[str | bytes] = deque(maxlen=256)
         self._wake_audio: deque[bytes] = deque()
         self._wake_audio_bytes = 0
         self._wake_audio_lock = threading.Lock()
@@ -376,10 +394,19 @@ class TaterNativeClient:
             minimum=100,
             maximum=2000,
         )
+        if getattr(self, "features", None) is not None and self.features._wake_verification_required():  # pylint: disable=protected-access
+            mode = "enforce"
         return mode, window_ms, timeout_ms
 
     def handle_audio(self, audio_chunk: bytes, audio_chunk_2: Optional[bytes] = None) -> None:
         """Retain enhanced microphone audio before forwarding it normally."""
+        if bool(getattr(self.state, "muted", False)):
+            self._wake_capture.clear()
+            with self._wake_audio_lock:
+                self._wake_audio.clear()
+                self._wake_audio_bytes = 0
+            return
+        capturing = self._wake_capture.feed(audio_chunk)
         frame = bytes(audio_chunk or b"")
         usable = len(frame) - (len(frame) % 2)
         if usable:
@@ -398,7 +425,7 @@ class TaterNativeClient:
                         trim = excess + (excess % 2)
                         self._wake_audio[0] = oldest[trim:]
                         self._wake_audio_bytes -= trim
-        if callable(self._original_handle_audio):
+        if not capturing and callable(self._original_handle_audio):
             self._original_handle_audio(audio_chunk, audio_chunk_2)
 
     def _wake_audio_snapshot(self, window_ms: int) -> bytes:
@@ -412,11 +439,20 @@ class TaterNativeClient:
 
     def wakeup(self, wake_word: Any) -> None:
         """Run Tater's second STT check before an enforced local wake."""
+        if bool(getattr(self.state, "muted", False)):
+            return
+        active = bool(getattr(self.satellite, "_pipeline_active", False))
+        if active and not (getattr(self.satellite, "_tater_barge_in_enabled", False) and getattr(self.satellite, "tts_response_active", False)):
+            return
+        if self._connected:
+            self._wake_capture.trigger()
         mode, _window_ms, _timeout_ms = self._wake_verifier_config()
+        if self.features._wake_verification_required():  # pylint: disable=protected-access
+            mode = "enforce"
         loop = self._loop
         if mode == "off" or not self._connected or loop is None or loop.is_closed():
             if callable(self._original_wakeup):
-                self._original_wakeup(wake_word)
+                self._start_local_wake(wake_word)
             return
         if mode == "enforce":
             if self._wake_verifier_gate.is_set():
@@ -425,7 +461,15 @@ class TaterNativeClient:
             self._wake_verifier_gate.set()
         loop.call_soon_threadsafe(self._queue_wake_verification, wake_word, mode)
         if mode == "observe" and callable(self._original_wakeup):
-            self._original_wakeup(wake_word)
+            self._start_local_wake(wake_word)
+
+    def _start_local_wake(self, wake_word: Any) -> None:
+        self._starting_local_wake = True
+        try:
+            if callable(self._original_wakeup):
+                self._original_wakeup(wake_word)
+        finally:
+            self._starting_local_wake = False
 
     def _next_wake_verifier_id(self) -> int:
         self._wake_verifier_generation = (self._wake_verifier_generation + 1) & 0xFFFFFFFF
@@ -438,7 +482,7 @@ class TaterNativeClient:
         if not self._connected:
             self._wake_verifier_gate.clear()
             if enforce and callable(self._original_wakeup):
-                self._original_wakeup(wake_word)
+                self._start_local_wake(wake_word)
             return
         _current_mode, window_ms, timeout_ms = self._wake_verifier_config()
         pcm = self._wake_audio_snapshot(window_ms)
@@ -446,7 +490,7 @@ class TaterNativeClient:
             _LOGGER.warning("STT wake verification skipped because the capture ring is not ready")
             self._wake_verifier_gate.clear()
             if enforce and callable(self._original_wakeup):
-                self._original_wakeup(wake_word)
+                self._start_local_wake(wake_word)
             return
 
         request_id = self._next_wake_verifier_id()
@@ -541,8 +585,9 @@ class TaterNativeClient:
             return
         if accepted or fail_open:
             if callable(self._original_wakeup):
-                self._original_wakeup(pending_wake)
+                self._start_local_wake(pending_wake)
         else:
+            self._wake_capture.cancel()
             _LOGGER.info("STT wake verification rejected false wake")
 
     def _wake_verifier_status(self) -> dict[str, Any]:
@@ -570,23 +615,90 @@ class TaterNativeClient:
         if loop is None or loop.is_closed():
             return
         for protocol_message in messages:
-            loop.call_soon_threadsafe(self._queue_protocol_message, protocol_message)
+            preserve_capture = self._starting_local_wake and isinstance(protocol_message, VoiceAssistantRequest) and not protocol_message.start
+            loop.call_soon_threadsafe(self._queue_protocol_message, protocol_message, preserve_capture)
 
-    def _queue_protocol_message(self, protocol_message: message.Message) -> None:
+    def _cancel_boundary(self) -> None:
+        self._boundary_generation += 1
+        if self._boundary_task is not None:
+            self._boundary_task.cancel()
+        self._boundary_task = None
+        self._wake_capture.cancel()
+
+    async def _start_with_boundary(self, protocol_message, generation: int) -> None:
+        try:
+            pcm, detected = self._wake_capture.snapshot()
+            # The boundary must belong to this wake phrase. Never apply Hey
+            # Tater's endpoint to a different custom wake word.
+            phrase = str(protocol_message.wake_word_phrase).lower().replace("_", " ").strip()
+            bundle = self.features.boundary_bundle(phrase)
+            boundary = None
+            try:
+                matching = bundle and json.loads(bundle.read_bytes()).get("wake_word", "").lower().replace("_", " ").strip() == phrase
+            except (OSError, ValueError):
+                matching = False
+            if matching:
+                boundary = await asyncio.to_thread(self._boundary_model.estimate, pcm, detected, bundle)
+            else:
+                self._boundary_model.last_status = {"ready": False, "reason": "no_matching_boundary"}
+            if generation != self._boundary_generation or not self._connected:
+                return
+            if self._wake_capture.overflow:
+                self._wake_capture.cancel()
+                self.satellite.stop()
+                _LOGGER.error("Wake setup exceeded the audio capture limit; please try again")
+                return
+            capture = self._wake_capture.take() or b""
+            cut = max(0, min(len(capture), boundary[0] * 2)) if boundary else 0
+            body = json.loads(self.frames_for_messages([protocol_message])[0])
+            body["payload"]["wake_preroll_boundary"] = 1
+            self._queue_frame(json.dumps(body, separators=(",", ":")))
+            frames = []
+            for segment in (capture[:cut], capture[cut:]):
+                frames.append([segment[offset : offset + 4096] for offset in range(0, len(segment), 4096)])
+            self._audio_preroll.extend(frames[0])
+            self._audio_preroll.append(_json_frame("voice.audio_boundary", {"kind": "wake_preroll_end", "version": 1}))
+            self._audio_preroll.extend(frames[1])
+        except asyncio.CancelledError:  # pylint: disable=try-except-raise
+            raise
+        except Exception:  # preserve a usable pipeline even if inference fails
+            _LOGGER.exception("Wake boundary start failed")
+            self._wake_capture.cancel()
+            self._voice_start_pending = False
+            self.satellite.stop()
+
+    def _queue_protocol_message(self, protocol_message: message.Message, preserve_capture: bool = False) -> None:
         if not self._connected:
             return
+        if isinstance(protocol_message, VoiceAssistantAnnounceFinished):
+            self.sendspin.duck(1.0)
         if isinstance(protocol_message, VoiceAssistantRequest):
             if protocol_message.start:
+                self.sendspin.duck(0.2)
                 self._voice_start_pending = True
                 self._audio_preroll.clear()
+                if self._wake_capture.active:
+                    self._boundary_generation += 1
+                    self._boundary_task = asyncio.create_task(self._start_with_boundary(protocol_message, self._boundary_generation))
+                    return
             else:
                 self._voice_start_pending = False
                 self._audio_preroll.clear()
+                if preserve_capture:
+                    self._boundary_generation += 1
+                    if self._boundary_task is not None:
+                        self._boundary_task.cancel()
+                else:
+                    self._cancel_boundary()
 
         for frame in self.frames_for_messages([protocol_message]):
             if isinstance(frame, bytes) and self._voice_start_pending:
                 if len(self._audio_preroll) == self._audio_preroll.maxlen:
                     self._audio_drops += 1
+                    self._cancel_boundary()
+                    self._audio_preroll.clear()
+                    self.satellite.stop()
+                    return
                 self._audio_preroll.append(frame)
                 continue
             self._queue_frame(frame)
@@ -736,6 +848,8 @@ class TaterNativeClient:
         self.state.connected = True
         self.state.satellite = self.satellite
         self._native_timers.connected()
+        self.features.connected()
+        self.sendspin.start()
         self.satellite._emit(LVAEvent.ZEROCONF, {"status": "connected"})  # pylint: disable=protected-access
         _LOGGER.info(
             "Connected to Tater native satellite API selector=%s device_id=%s board=%s room=%s",
@@ -750,6 +864,9 @@ class TaterNativeClient:
         self._connected = False
         self._voice_start_pending = False
         self._audio_preroll.clear()
+        self._cancel_boundary()
+        self.sendspin.duck(1.0)
+        self.features.disconnected()
         timeout = self._wake_verifier_timeout
         self._wake_verifier_timeout = None
         if timeout is not None:
@@ -810,7 +927,11 @@ class TaterNativeClient:
                 "wake_engine": {"verifier": self._wake_verifier_status()},
                 "bluetooth": self._bluetooth.status(),
             }
+            status_payload.update(self.features.status())
             status_payload.update(self._native_timers.status())
+            status_payload["wake_engine"]["boundary"] = dict(self._boundary_model.last_status)
+            status_payload["bluetooth"] = self._bluetooth.status()
+            status_payload["sendspin"] = self.sendspin.status()
             self._queue_frame(
                 _json_frame(
                     "status",
@@ -822,6 +943,9 @@ class TaterNativeClient:
         message_type = str(body.get("type") or "").strip()
         raw_payload = body.get("payload")
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+
+        if self.features.handle_message(body):
+            return
 
         if self._bluetooth.handle_message(body):
             return
@@ -848,7 +972,36 @@ class TaterNativeClient:
             from .live_settings import apply_live_settings
 
             try:
-                applied = apply_live_settings(self.state, payload)
+                if "output_channel_mode" in payload and payload["output_channel_mode"] not in self.capabilities.get("sendspin_output_channel_modes", ["stereo"]):
+                    raise ValueError("This Sendspin player does not support the selected output channel")
+                merged = {**dict(getattr(self.state, "native_settings", {}) or {}), **payload}
+                applied = apply_live_settings(self.state, merged)
+                self.features.settings.update(applied)
+                if "wake_engine" in payload:
+                    self.features._apply_oww_selection()  # pylint: disable=protected-access
+                if set(payload).intersection(
+                    {
+                        "wake_sensitivity",
+                        "wake_environment",
+                        "wake_detector_mode",
+                        "wake_nww_enabled",
+                        "wake_oww_enabled",
+                        "wake_mww_enabled",
+                        "barge_in_enabled",
+                        "nww_architecture",
+                        "nww_threshold",
+                        "nww_patience",
+                        "oww_threshold",
+                        "oww_patience",
+                        "oww_wake_word",
+                        "oww_wake_word_url",
+                        "nww_wake_word",
+                        "nww_wake_word_url",
+                        "output_channel_mode",
+                        "wake_threshold",
+                    }
+                ):
+                    applied.update(self.features.apply_advanced_settings(payload))
                 result = {"ok": True, "settings": applied}
             except Exception as exc:  # pylint: disable=broad-except
                 _LOGGER.exception("Could not apply Tater live settings")
@@ -885,6 +1038,7 @@ class TaterNativeClient:
             if not _truthy(payload.get("ok")):
                 self._voice_start_pending = False
                 self._audio_preroll.clear()
+                self._cancel_boundary()
                 self.satellite._is_streaming_audio = False  # pylint: disable=protected-access
                 self.satellite._pipeline_active = False  # pylint: disable=protected-access
                 _LOGGER.error("Tater rejected voice start: %s", payload.get("error") or payload.get("result") or "unknown error")
@@ -931,8 +1085,7 @@ class TaterNativeClient:
             url = str(payload.get("url") or "").strip()
             if not url:
                 return
-            if self._media_session_id:
-                self._duck_media_for_speech(payload)
+            self._duck_media_for_speech(payload)
             if hasattr(self.satellite, "_reachy_tts_kind"):
                 self.satellite._reachy_tts_kind = str(payload.get("tts_kind") or "")  # pylint: disable=protected-access
             if str(payload.get("tts_kind") or "").strip().lower() in {"tool", "tool_progress"} and hasattr(self.satellite, "_reachy_tool_progress_active"):
@@ -957,6 +1110,7 @@ class TaterNativeClient:
             return
 
         if message_type == "play.stop":
+            self.sendspin.duck(1.0)
             self.satellite.stop()
             return
 
@@ -964,7 +1118,7 @@ class TaterNativeClient:
             _LOGGER.error("Tater native satellite error: %s", payload.get("error") or payload.get("message") or "unknown error")
 
     def _start_media_session(self, payload: dict[str, Any]) -> None:
-        media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
+        media: Any = payload.get("media") if isinstance(payload.get("media"), dict) else {}
         session_id = str(payload.get("session_id") or "").strip()
         group_id = str(payload.get("group_id") or "").strip()
         media_url = str(media.get("url") or payload.get("url") or "").strip()
@@ -978,7 +1132,7 @@ class TaterNativeClient:
             )
             return
 
-        player = getattr(self.state, "music_player", None)
+        player: Any = getattr(self.state, "music_player", None)
         play_persistent = getattr(player, "play_persistent", None)
         play = getattr(player, "play", None)
         if not callable(play_persistent) and not callable(play):
@@ -1043,6 +1197,7 @@ class TaterNativeClient:
                     event_callback=media_event,
                 )
             else:
+                assert callable(play)
                 play(
                     media_url,
                     done_callback=lambda: media_event("finished", ""),
@@ -1066,7 +1221,7 @@ class TaterNativeClient:
         requested_session_id = str(payload.get("session_id") or "").strip()
         if requested_session_id and requested_session_id != active_session_id:
             return
-        player = getattr(self.state, "music_player", None)
+        player: Any = getattr(self.state, "music_player", None)
         stop = getattr(player, "stop", None)
         if callable(stop):
             stop()
@@ -1078,7 +1233,7 @@ class TaterNativeClient:
         requested_session_id = str(payload.get("session_id") or "").strip()
         if requested_session_id and requested_session_id != active_session_id:
             return
-        player = getattr(self.state, "music_player", None)
+        player: Any = getattr(self.state, "music_player", None)
         control = getattr(player, action, None)
         if callable(control):
             control()
@@ -1094,19 +1249,22 @@ class TaterNativeClient:
             volume = max(0.0, min(100.0, float(payload.get("volume_percent") or 0.0)))
         except (TypeError, ValueError):
             return
-        player = getattr(self.state, "music_player", None)
+        player: Any = getattr(self.state, "music_player", None)
         set_volume = getattr(player, "set_volume", None)
         if callable(set_volume):
             set_volume(volume)
 
     def _duck_media_for_speech(self, payload: dict[str, Any]) -> None:
-        ducking = payload.get("ducking") if isinstance(payload.get("ducking"), dict) else {}
+        ducking: Any = payload.get("ducking") if isinstance(payload.get("ducking"), dict) else {}
         raw_target = ducking.get("target_percent")
         try:
             factor = max(0.0, min(1.0, float(50.0 if raw_target is None else raw_target) / 100.0))
         except (TypeError, ValueError):
             factor = 0.5
-        player = getattr(self.state, "music_player", None)
+        self.sendspin.duck(factor)
+        if not self._media_session_id:
+            return
+        player: Any = getattr(self.state, "music_player", None)
         duck = getattr(player, "duck", None)
         if callable(duck):
             duck(factor)
@@ -1141,6 +1299,10 @@ class TaterNativeClient:
         self._submit_frame(_json_frame(message_type, event_payload))
 
     async def close(self) -> None:
+        self._cancel_boundary()
+        await self.features.close()
+        await self.sendspin.close()
+        await asyncio.to_thread(self._boundary_model.close)
         await self._bluetooth.close()
         await self._native_timers.close()
         stop = self._stop

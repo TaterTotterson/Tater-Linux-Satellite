@@ -1,11 +1,18 @@
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import mpv
 
 from linux_voice_assistant.player.base import AudioPlayer
 from linux_voice_assistant.player.state import PlayerState
+
+_TATER_CHANNEL_FILTERS = {
+    "stereo": "",
+    "left": "lavfi=[pan=stereo|c0=c0|c1=c0]",
+    "right": "lavfi=[pan=stereo|c0=c1|c1=c1]",
+    "mono": "lavfi=[pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1]",
+}
 
 
 class LibMpvPlayer(AudioPlayer):
@@ -88,6 +95,100 @@ class LibMpvPlayer(AudioPlayer):
         with self._state_lock:
             self._mpv["start"] = max(0.0, float(start_position_ms or 0) / 1000.0)
             self._mpv["loop-file"] = "inf" if loop else "no"
+
+    def prepare_synchronized(
+        self,
+        url: str,
+        *,
+        channel: str = "stereo",
+        loop: bool = False,
+        done_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Load media paused with deterministic channel routing."""
+        normalized_channel = str(channel or "stereo").strip().lower()
+        audio_filter = _TATER_CHANNEL_FILTERS.get(
+            normalized_channel,
+            _TATER_CHANNEL_FILTERS["stereo"],
+        )
+        with self._state_lock:
+            self._done_callback = done_callback
+            self._set_state(PlayerState.LOADING)
+        self._mpv.pause = True
+        self._mpv.speed = 1.0
+        self._mpv.audio_pitch_correction = False
+        self._mpv.loop_file = "inf" if loop else "no"
+        self._mpv.command("af", "set", audio_filter)
+        self._mpv.play(url)
+
+    def _mpv_property(self, name: str, default: Any = None) -> Any:
+        try:
+            value = getattr(self._mpv, name)
+        except Exception:  # libmpv properties may be unavailable while loading
+            return default
+        return default if value is None else value
+
+    def synchronized_snapshot(self) -> Dict[str, Any]:
+        """Read timeline and cache properties as one thread-safe snapshot."""
+        with self._state_lock:
+            timeline_position = self._mpv_property("time_pos")
+            rendered_position = self._mpv_property("audio_pts")
+            position = rendered_position if rendered_position is not None else timeline_position
+            raw_cache_duration = self._mpv_property("demuxer_cache_duration")
+            cache_duration = max(0.0, float(raw_cache_duration or 0.0))
+            duration = self._mpv_property("duration", 0.0)
+            return {
+                "loaded": position is not None,
+                "position_seconds": max(0.0, float(position or 0.0)),
+                "timeline_position_seconds": max(0.0, float(timeline_position or 0.0)),
+                "rendered_position_seconds": max(0.0, float(position or 0.0)),
+                "buffered_seconds": cache_duration,
+                # mpv commonly leaves this at zero for a fully downloaded
+                # short HTTP WAV. Treat zero as unavailable so firmware can
+                # use its stable loaded+paused fallback instead of deadlocking.
+                "buffered_seconds_known": bool(raw_cache_duration is not None and cache_duration > 0.0),
+                "duration_seconds": max(0.0, float(duration or 0.0)),
+                "seeking": bool(self._mpv_property("seeking", False)),
+                "rebuffering": bool(self._mpv_property("paused_for_cache", False)),
+                "paused": bool(self._mpv_property("pause", False)),
+                "speed": float(self._mpv_property("speed", 1.0) or 1.0),
+            }
+
+    def seek_synchronized(self, position_seconds: float) -> None:
+        """Seek to an absolute media position while retaining pause state."""
+        with self._state_lock:
+            self._mpv.command(
+                "seek",
+                max(0.0, float(position_seconds)),
+                "absolute+exact",
+            )
+
+    def jump_synchronized(self, delta_seconds: float) -> None:
+        """Queue a relative exact seek without blocking synchronized control."""
+        with self._state_lock:
+            self._mpv.command_async(
+                "seek",
+                float(delta_seconds),
+                "relative+exact",
+            )
+
+    def set_synchronized_speed(self, speed: float) -> None:
+        """Set a narrowly clamped rate for transparent clock correction."""
+        with self._state_lock:
+            self._mpv.speed = max(0.995, min(1.005, float(speed)))
+
+    def resume_synchronized(self) -> None:
+        """Queue pause=false so the scheduler never blocks on MPV."""
+        with self._state_lock:
+            self._mpv.command_async("set_property", "pause", False)
+            self._set_state(PlayerState.PLAYING)
+
+    def reset_synchronized(self) -> None:
+        """Restore defaults so ordinary local playback is unaffected."""
+        with self._state_lock:
+            self._mpv.speed = 1.0
+            self._mpv.audio_pitch_correction = True
+            self._mpv.loop_file = "no"
+            self._mpv.command("af", "set", "")
 
     def pause(self) -> None:
         """Pause playback."""

@@ -1,0 +1,39 @@
+From 0a89aa862b7859123608bb9f8db6fc4175bab62d Mon Sep 17 00:00:00 2001
+From: TaterTotterson <tater@tatertotterson.com>
+Date: Sat, 10 Oct 2026 13:52:00 -0500
+Subject: [PATCH] Accept aiosendspin static delay command
+
+aiosendspin 9.1.1 uses set_static_delay/static_delay_ms where the newer
+spec uses set_output_delay/output_delay_ms. Accept both spellings.
+---
+ deps/sendspin/src/protocol.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/deps/sendspin/src/protocol.cpp b/deps/sendspin/src/protocol.cpp
+index 34d8bd9..ae1a880 100644
+--- a/deps/sendspin/src/protocol.cpp
++++ b/deps/sendspin/src/protocol.cpp
+@@ -201,6 +201,9 @@ static bool process_server_player_command_object(const JsonObject player_object,
+     }
+ 
+     std::string command_str = player_object["command"].as<std::string>();
++    if (command_str == "set_static_delay") {
++        command_str = "set_output_delay";
++    }
+     auto command = player_command_from_string(command_str);
+ 
+     if (!command.has_value()) {
+@@ -219,8 +222,10 @@ static bool process_server_player_command_object(const JsonObject player_object,
+         player_cmd->mute = v;
+     }
+ 
+-    if (auto v = read_uint_field<uint16_t>(player_object["output_delay_ms"], "output_delay_ms")) {
++    if (auto v = read_uint_field<uint16_t>(player_object["output_delay_ms"], "output_delay_ms")) {
+         player_cmd->output_delay_ms = v;
++    } else if (auto v = read_uint_field<uint16_t>(player_object["static_delay_ms"], "static_delay_ms")) {
++        player_cmd->output_delay_ms = v;
+     }
+ 
+     return true;
+-- 
+2.51.0

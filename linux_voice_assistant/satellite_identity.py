@@ -14,7 +14,7 @@ def identity_text(value: Any, *, required: bool) -> str:
     value = value.strip(" ")
     if (required and not value) or len(value.encode("utf-8")) > 63:
         raise ValueError("Name must be 1–63 bytes and room at most 63 bytes")
-    return value
+    return str(value)
 
 
 def save_identity(path: Path | None, name: str, room: str) -> None:

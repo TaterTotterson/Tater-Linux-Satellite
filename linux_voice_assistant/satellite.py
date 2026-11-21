@@ -982,8 +982,13 @@ class VoiceSatelliteProtocol(APIServer):
             return
 
         if self._pipeline_active:
-            _LOGGER.debug("Ignoring wake word - pipeline already active")
-            return
+            barge_in = bool(getattr(self, "_tater_barge_in_enabled", False))
+            if (not barge_in) or (not self.tts_response_active):
+                _LOGGER.debug("Ignoring wake word - pipeline already active")
+                return
+            _LOGGER.info("Tater wake word interrupted the active TTS response")
+            self._continue_conversation = False
+            self.stop()
 
         wake_word_phrase = wake_word.wake_word  # type: ignore[union-attr]
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
@@ -994,9 +999,10 @@ class VoiceSatelliteProtocol(APIServer):
         self._pipeline_active = True
         self._emit(LVAEvent.WAKE_WORD_DETECTED)
         self.duck()
-        if self.state.wakeup_sound:
+        wakeup_sound = self.state.wakeup_sound
+        if wakeup_sound:
             self.state.tts_player.play(
-                self.state.wakeup_sound,
+                wakeup_sound,
                 done_callback=lambda: self._on_wakeup_sound_finished(wake_word_phrase),
             )
         else:

@@ -1,3 +1,18 @@
+# Unreleased
+
+- Share the ThirdReality wake profiles, calibrated ONNX openWakeWord and
+  NanoWakeWord CNN/GRU workers, and optional dual-detector confirmation with
+  regular Linux satellites. Keep inference off the microphone thread.
+- Add Native/Echo wake-boundary inference and ordered audio markers. Preserve
+  command audio during STT verification, the wake sound and voice-start setup;
+  keep audio when a matching endpoint is unavailable.
+- Add a supervised Sendspin player, persistent pairing, stereo output routing,
+  speech ducking, audio scenes, fades, looping backgrounds and stall recovery.
+- Gate reply interruption on hardware echo cancellation. Keep existing timers,
+  continued conversation, live identity settings and on-demand Bluetooth.
+- Include ONNX and Sendspin in Docker, with optional installers for regular
+  Linux setups. Physical satellite testing remains pending.
+
 <a id="v1.1.13-tater4"></a>
 # v1.1.13-tater4 - 2026-11-19
 

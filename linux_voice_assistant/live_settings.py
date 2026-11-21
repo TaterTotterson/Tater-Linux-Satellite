@@ -129,7 +129,7 @@ def _download(url: str, *, maximum: int, label: str) -> bytes:
         raise ValueError(f"{label} is larger than {maximum} bytes")
     if not body:
         raise ValueError(f"{label} download was empty: {final_url}")
-    return body
+    return bytes(body)
 
 
 def _atomic_write(path: Path, body: bytes) -> None:
@@ -169,6 +169,9 @@ def _custom_wake_word(state: Any, source_url: str, *, allow_download: bool) -> t
             config = json.loads(config_body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("wake-word JSON is invalid") from exc
+        bundle = config if isinstance(config, dict) and config.get("type") == "tater_wake_word_bundle" else None
+        if bundle:
+            config = bundle.get("micro_wake_word") or {}
         if not isinstance(config, dict) or _text(config.get("type")) != "micro":
             raise ValueError("custom wake word must use the micro model type")
         model_reference = _text(config.get("model") or config.get("model_url"))
@@ -176,6 +179,15 @@ def _custom_wake_word(state: Any, source_url: str, *, allow_download: bool) -> t
             raise ValueError("wake-word JSON does not include a model")
         model_url = _http_url(urljoin(url, model_reference), label="wake-word model URL")
         model_body = _download(model_url, maximum=_MAX_WAKE_MODEL_BYTES, label="wake-word model")
+        expected = config.get("model_sha256")
+        if expected and hashlib.sha256(model_body).hexdigest() != expected:
+            raise ValueError("wake-word model SHA-256 mismatch")
+        if config.get("model_size_bytes") and len(model_body) != int(config["model_size_bytes"]):
+            raise ValueError("wake-word model size mismatch")
+        if bundle:
+            from .wake_boundary import cache_boundary_bundle
+
+            cache_boundary_bundle(bundle, url, directory / f"{model_id}.wake-bundle.json", lambda address: _download(address, maximum=_MAX_WAKE_MODEL_BYTES, label="boundary model"))
         local_config = dict(config)
         local_config["model"] = model_path.name
         _atomic_write(model_path, model_body)
@@ -245,7 +257,7 @@ def _prepare_wake_sound(state: Any, settings: dict[str, Any], *, allow_download:
 
 
 def _normalize_led_settings(settings: dict[str, Any]) -> None:
-    settings["led_brightness"] = _bounded_int(settings.get("led_brightness"), int(_LED_DEFAULTS["led_brightness"]), 0, 100)
+    settings["led_brightness"] = _bounded_int(settings.get("led_brightness"), int(str(_LED_DEFAULTS["led_brightness"])), 0, 100)
     color = _text(settings.get("led_color") or _LED_DEFAULTS["led_color"]).lower()
     color = color.removeprefix("#")
     if len(color) == 3 and all(character in "0123456789abcdef" for character in color):

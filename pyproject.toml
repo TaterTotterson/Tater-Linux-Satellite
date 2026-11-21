@@ -39,6 +39,7 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+onnx = ["onnxruntime>=1.22,<2"]
 dev = [
     "black",
     "flake8",
@@ -66,7 +67,7 @@ include = ["linux_voice_assistant", "linux_voice_assistant.*"]
 exclude = ["tests", "tests.*"]
 
 [tool.setuptools.package-data]
-linux_voice_assistant = ["assets/tater_native/*.wav"]
+linux_voice_assistant = ["assets/tater_native/*.wav", "assets/wake/*"]
 
 [tool.black]
 line-length = 200
