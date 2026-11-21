@@ -1,4 +1,7 @@
-# v1.1.13-tater5 - 2026-11-21
+# v1.2.0 - 2026-11-21
+
+- Use standard semantic version numbers for Linux Satellite releases, starting
+  with 1.2.0.
 
 - Share the ThirdReality wake profiles, calibrated ONNX openWakeWord and
   NanoWakeWord CNN/GRU workers, and optional dual-detector confirmation with

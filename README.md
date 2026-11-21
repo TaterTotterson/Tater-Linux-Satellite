@@ -104,7 +104,7 @@ start command if the system defaults are wrong.
 ## Prefer Docker?
 
 The release image is
-`ghcr.io/tatertotterson/tater-linux-satellite:1.1.13-tater5`, with **amd64 and
+`ghcr.io/tatertotterson/tater-linux-satellite:1.2.0`, with **amd64 and
 arm64** builds. `:latest` follows releases. It includes ONNX wake detection,
 the boundary model, and Sendspin.
 
