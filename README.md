@@ -11,7 +11,7 @@
 
 Turn a Linux computer, Raspberry Pi, or robot such as Reachy Mini into a
 hands-free voice satellite for [Tater](https://github.com/TaterTotterson/Tater).
-Wake-word detection runs locally; Tater handles speech recognition,
+Wake-word detection runs locally; your connected controller handles speech recognition,
 conversation, tools, and spoken replies.
 
 You can also connect through the
@@ -88,9 +88,9 @@ file on later starts; you can remove `--tater-token` from the command.
 
 ### 4. Choose your audio and wake settings
 
-Use the connected controller's satellite settings to choose wake words,
-detector, sensitivity, wake sound, and volume. Settings are saved for the next
-start.
+Use the satellite settings in **Tater or the Home Assistant bridge** to choose
+wake words, detector, sensitivity, wake sound, and volume. Settings are saved
+for the next start.
 
 To find or select a microphone and speaker:
 
