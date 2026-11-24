@@ -23,7 +23,8 @@ It provides Home Assistant and Mini-Tater modes for your satellites.
 | Feature | What you get |
 | --- | --- |
 | Wake words | microWakeWord, ONNX openWakeWord, and NanoWakeWord CNN/GRU, with optional dual-detector confirmation and custom wake words. |
-| Natural speech | A local boundary model helps retain commands spoken immediately after the wake word. Optional STT verification checks false wakes separately. |
+| Natural speech | A matching wake-boundary model helps retain commands spoken immediately after the wake word, so you can say “Hey Tater, turn on the lights” without pausing. |
+| False-wake prevention | **Dual mode (MWW + OWW or MWW + NWW) is recommended.** Both detectors must agree on the same wake phrase, entirely on the satellite. For **MWW-only** setups, enable **STT wake verification** in Tater or the Home Assistant bridge. |
 | Conversations | Spoken replies, announcements, continued conversation, and automatic reconnects. Reply interruption is available with echo-cancelling microphone hardware. |
 | Music and audio | Sendspin playback and stereo channel routing, speech ducking, announcement overlays, and audio scenes with looping backgrounds, fades, and recovery from stalled playback. |
 | Timers | Local countdowns, alarms, cancel and snooze controls, and stop-word dismissal. Countdowns continue if the controller disconnects. |
