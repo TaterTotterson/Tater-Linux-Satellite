@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from .atomic_file import write_bytes_atomic as _write_bytes_atomic
 from .bluetooth_proxy import BluetoothProxy
 from .peripheral_api import LVAEvent
 from .tater_oww_onnx import OWWWorker, runtime_assets_ready
@@ -261,22 +262,6 @@ def _expected_model_sha256(manifest: dict[str, Any]) -> str:
                 raise ValueError(f"wake-word manifest has an invalid {key}")
             return value.lower()
     return ""
-
-
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with temporary.open("wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _download_custom_wake_package(state: Any, manifest_url: str) -> tuple[str, Any, Any]:

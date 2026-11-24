@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .atomic_file import write_bytes_atomic
+
 _LOGGER = logging.getLogger(__name__)
 RATE = 16000
 GUARD_SAMPLES = 1280  # 80 ms, shared with Native and Echo
@@ -229,11 +231,6 @@ def cache_boundary_bundle(bundle: dict, source_url: str, destination: Path, down
     # changing the model referenced by an already committed manifest.
     name = hashlib.sha256(model).hexdigest() + ".boundary.tflite"
     model_path = destination.parent / name
-    temporary = destination.with_suffix(".tmp")
-    try:
-        model_path.write_bytes(model)
-        cached = {**bundle, "wake_boundary": {**settings, "model": name}}
-        temporary.write_text(json.dumps(cached, indent=2) + "\n")
-        temporary.replace(destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_bytes_atomic(model_path, model)
+    cached = {**bundle, "wake_boundary": {**settings, "model": name}}
+    write_bytes_atomic(destination, (json.dumps(cached, indent=2) + "\n").encode("utf-8"))

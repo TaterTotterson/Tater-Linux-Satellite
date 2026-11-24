@@ -1,3 +1,16 @@
+# 1.2.1
+
+- Fix custom wake-model installs when startup and incoming settings overlap.
+  Give each download its own temporary file so one worker cannot remove
+  another worker's pending model and prevent activation.
+- Apply the fix to NanoWakeWord, openWakeWord, and custom microWakeWord model
+  writes, and publish boundary models and their cached bundles atomically.
+  Failed writes preserve the previous complete file and clean up temporary files.
+- Verify the race regression tests on a SAT1 Raspberry Pi Zero 2 W and confirm
+  its custom MWW + NanoWakeWord GRU profile loads and reports ready.
+- Clarify Tater and Home Assistant bridge setup, wake-boundary support, and
+  recommended dual-detector wake confirmation in the documentation.
+
 # 1.2.0
 
 - Use standard semantic version numbers for Linux Satellite releases, starting

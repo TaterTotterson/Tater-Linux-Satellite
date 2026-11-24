@@ -13,7 +13,24 @@ jobs:
       - uses: actions/checkout@v3
         with:
           ref: main
+      - name: Keep existing release notes
+        id: existing
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          heading = re.compile(r"^#{1,6}\s+v?" + re.escape(version) + r"(?:\s|$)", re.MULTILINE)
+          documented = bool(heading.search(Path("CHANGELOG.md").read_text()))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"documented={str(documented).lower()}\n")
+          PY
       - uses: rhysd/changelog-from-release/action@v3
+        if: steps.existing.outputs.documented != 'true'
         with:
           file: CHANGELOG.md
           github_token: ${{ secrets.GITHUB_TOKEN }}
