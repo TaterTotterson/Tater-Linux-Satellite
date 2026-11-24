@@ -141,4 +141,4 @@ expected-line-ending-format = "LF"
 
 [tool.setuptools_scm]
 # Docker and source archives do not contain Git metadata.
-fallback_version = "1.2.1"
+fallback_version = "1.2.2"

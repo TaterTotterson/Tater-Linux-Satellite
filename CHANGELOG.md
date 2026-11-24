@@ -1,3 +1,11 @@
+# 1.2.2
+
+- Publish a maintenance runtime release for the ThirdReality firmware update.
+  It includes the concurrent wake-model download fix from 1.2.1 for custom
+  microWakeWord, openWakeWord, NanoWakeWord, and cached wake-boundary models.
+- Runtime behavior is unchanged from 1.2.1. Downstream firmware must update
+  its source pin and rebuild to include the fix.
+
 # 1.2.1
 
 - Fix custom wake-model installs when startup and incoming settings overlap.
